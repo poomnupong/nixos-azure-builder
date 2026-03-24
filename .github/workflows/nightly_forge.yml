@@ -1,0 +1,95 @@
+name: Nightly Forge
+
+on:
+  schedule:
+    # Run every night at midnight UTC
+    - cron: "0 0 * * *"
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write   # needed to create GitHub Releases
+
+jobs:
+  build-and-release:
+    name: Build NixOS Azure VHD
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout
+      # -----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Install Nix (with flakes enabled) and prime the Magic Nix Cache.
+      #    magic-nix-cache-action also frees ~100 GB of runner disk space that
+      #    GitHub's default image wastes on pre-installed software we don't use.
+      # -----------------------------------------------------------------------
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v14
+
+      - name: Enable Magic Nix Cache (Nothing but Nix)
+        uses: DeterminateSystems/magic-nix-cache-action@v8
+
+      # -----------------------------------------------------------------------
+      # 3. Generate the version / release tag
+      # -----------------------------------------------------------------------
+      - name: Generate version string
+        id: version
+        run: |
+          chmod +x ./get_version.sh
+          VERSION=$(./get_version.sh)
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Built version: ${VERSION}"
+
+      # -----------------------------------------------------------------------
+      # 4. Build the Azure VHD image
+      # -----------------------------------------------------------------------
+      - name: Build Azure image
+        run: nix build .#azureImage --print-build-logs
+
+      # -----------------------------------------------------------------------
+      # 5. Locate the .vhd file produced by the build
+      # -----------------------------------------------------------------------
+      - name: Locate VHD artifact
+        id: artifact
+        run: |
+          VHD_PATH=$(find result/ -name "*.vhd" | head -n 1)
+          if [ -z "${VHD_PATH}" ]; then
+            echo "ERROR: No .vhd file found under result/" >&2
+            exit 1
+          fi
+          echo "VHD_PATH=${VHD_PATH}" >> "$GITHUB_OUTPUT"
+          echo "Found VHD: ${VHD_PATH}"
+
+      # -----------------------------------------------------------------------
+      # 6. Stage the VHD with a versioned name so the release asset is clear
+      # -----------------------------------------------------------------------
+      - name: Stage VHD for upload
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          VHD_PATH="${{ steps.artifact.outputs.VHD_PATH }}"
+          cp "${VHD_PATH}" "nixos-azure-${VERSION}.vhd"
+
+      # -----------------------------------------------------------------------
+      # 7. Create a GitHub Release and upload the VHD
+      # -----------------------------------------------------------------------
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: ${{ steps.version.outputs.VERSION }}
+          body: |
+            Nightly NixOS Azure VHD image — built automatically by the
+            **Nightly Forge** workflow.
+
+            **Tag:** `${{ steps.version.outputs.VERSION }}`
+
+            To deploy, upload `nixos-azure-${{ steps.version.outputs.VERSION }}.vhd`
+            to your Azure Storage Account and create a Managed Image from it.
+          files: nixos-azure-${{ steps.version.outputs.VERSION }}.vhd
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
