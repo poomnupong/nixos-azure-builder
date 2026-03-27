@@ -14,15 +14,18 @@
       system = "x86_64-linux";
     in
     {
-      packages.${system}.azureImage = nixos-generators.nixosGenerate {
-        inherit system;
-        format = "azure";
-        modules = [
-          ./core_pulse.nix
-        ];
+      packages.${system} = let
+        azureImage = nixos-generators.nixosGenerate {
+          inherit system;
+          format = "azure";
+          modules = [
+            ./core_pulse.nix
+          ];
+        };
+      in {
+        inherit azureImage;
+        # Convenience alias
+        default = azureImage;
       };
-
-      # Convenience alias
-      packages.${system}.default = self.packages.${system}.azureImage;
     };
 }
