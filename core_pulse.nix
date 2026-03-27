@@ -9,7 +9,7 @@
 # After editing, push to `main` and the nightly_forge workflow will
 # automatically build and publish a fresh Azure VHD release.
 
-{ pkgs, ... }:
+{ pkgs, lib, ... }:
 
 {
   # ---------------------------------------------------------------------------
@@ -53,7 +53,7 @@
     enable = true;
     settings = {
       PasswordAuthentication = false;
-      PermitRootLogin = "no";
+      PermitRootLogin = lib.mkForce "no";
     };
   };
 
