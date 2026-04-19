@@ -1,12 +1,12 @@
-name: Nightly Forge
+name: Weekly Forge
 
 on:
   schedule:
-    # Run every night at midnight UTC
-    - cron: "0 0 * * *"
-  push:
-    branches:
-      - main
+    # Run every Saturday at 00:00 US Central Standard Time (06:00 UTC).
+    # Note: GitHub Actions cron runs in UTC and does not observe DST, so
+    # during US Central Daylight Time this effectively runs at 01:00 local.
+    - cron: "0 6 * * 6"
+  workflow_dispatch:
 
 permissions:
   contents: write   # needed to create GitHub Releases
@@ -91,8 +91,8 @@ jobs:
           tag_name: ${{ steps.version.outputs.VERSION }}
           name: ${{ steps.version.outputs.VERSION }}
           body: |
-            Nightly NixOS Azure VHD image — built automatically by the
-            **Nightly Forge** workflow.
+            Weekly NixOS Azure VHD image — built automatically by the
+            **Weekly Forge** workflow.
 
             **Tag:** `${{ steps.version.outputs.VERSION }}`
 

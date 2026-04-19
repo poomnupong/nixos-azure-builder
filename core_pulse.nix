@@ -6,7 +6,7 @@
 #   - Define user accounts under `users.users`
 #   - Inject SSH public keys under `users.users.<name>.openssh.authorizedKeys.keys`
 #
-# After editing, push to `main` and the nightly_forge workflow will
+# After editing, push to `main` and the weekly_forge workflow will
 # automatically build and publish a fresh Azure VHD release.
 
 { pkgs, lib, ... }:

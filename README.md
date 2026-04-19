@@ -10,10 +10,10 @@
 
 ## What this does
 
-The **Nightly Forge** pipeline uses [Nix Flakes](https://nixos.wiki/wiki/Flakes)
+The **Weekly Forge** pipeline uses [Nix Flakes](https://nixos.wiki/wiki/Flakes)
 and [nixos-generators](https://github.com/nix-community/nixos-generators) to
-build a ready-to-deploy NixOS `.vhd` image every night at midnight UTC (and on
-every push to `main`).  The resulting image is uploaded as a GitHub Release
+build a ready-to-deploy NixOS `.vhd` image every Saturday at 00:00 US Central
+Standard Time (06:00 UTC).  The resulting image is uploaded as a GitHub Release
 tagged with the build timestamp (`YYYYMMDD-HHMM`).
 
 ```
@@ -29,7 +29,7 @@ nixos-azure-builder/
 │   └── ci-azure.md                  # Azure CI architecture & operations guide
 ├── .github/
 │   └── workflows/
-│       ├── nightly_forge.yml        # Nightly VHD build + GitHub Release
+│       ├── weekly_forge.yml         # Weekly VHD build + GitHub Release
 │       ├── azure-smoke-test.yml     # Deploys the VHD to Azure and tears the RG down
 │       └── azure-janitor.yml        # Daily cleanup safety net for stuck run RGs
 ├── LICENSE                          # MIT
@@ -96,7 +96,7 @@ have added your SSH public key before building.
 
 ## Azure CI setup (one-time bootstrap)
 
-The nightly build always runs in GitHub Actions, but the **smoke-test** and
+The weekly build always runs in GitHub Actions, but the **smoke-test** and
 **janitor** workflows need to talk to Azure. To keep client secrets out of the
 repo, authentication is done via **GitHub OIDC federation** to a Microsoft
 Entra ID (formerly Azure AD) service principal. The `scripts/bootstrap-azure-ci.sh` helper provisions
@@ -149,7 +149,7 @@ What it does:
 1. Creates the control RG and `N` run RGs.
 2. Creates a Microsoft Entra ID application + service principal with **federated
    credentials** trusting tokens from GitHub Actions for:
-   * `ref:refs/heads/main` (nightly build + smoke test)
+   * `ref:refs/heads/main` (weekly build + smoke test)
    * `environment:azure-janitor` (daily janitor)
 3. Grants the SP `Contributor` on each run RG and `Reader` on the control RG.
 4. Creates a monthly subscription budget with an email notification (Layer 4
