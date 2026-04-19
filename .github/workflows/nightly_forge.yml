@@ -66,16 +66,24 @@ jobs:
           echo "Found VHD: ${VHD_PATH}"
 
       # -----------------------------------------------------------------------
-      # 6. Stage the VHD with a versioned name so the release asset is clear
+      # 6. Stage and compress the VHD.
+      #
+      #    GitHub Release assets are capped at 2 GiB each, but the raw Azure
+      #    VHD is ~5 GB. Gzip-compress the image before upload — VHDs contain
+      #    large runs of zeros and typically shrink by an order of magnitude,
+      #    well under the 2 GiB asset limit.
       # -----------------------------------------------------------------------
-      - name: Stage VHD for upload
+      - name: Stage and compress VHD for upload
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           VHD_PATH="${{ steps.artifact.outputs.VHD_PATH }}"
-          cp "${VHD_PATH}" "nixos-azure-${VERSION}.vhd"
+          ASSET="nixos-azure-${VERSION}.vhd"
+          cp "${VHD_PATH}" "${ASSET}"
+          gzip -9 "${ASSET}"
+          ls -lh "${ASSET}.gz"
 
       # -----------------------------------------------------------------------
-      # 7. Create a GitHub Release and upload the VHD
+      # 7. Create a GitHub Release and upload the compressed VHD
       # -----------------------------------------------------------------------
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -88,8 +96,15 @@ jobs:
 
             **Tag:** `${{ steps.version.outputs.VERSION }}`
 
-            To deploy, upload `nixos-azure-${{ steps.version.outputs.VERSION }}.vhd`
+            The asset is gzip-compressed to fit within GitHub's 2 GiB
+            release-asset limit. Decompress before use:
+
+            ```sh
+            gunzip nixos-azure-${{ steps.version.outputs.VERSION }}.vhd.gz
+            ```
+
+            Then upload `nixos-azure-${{ steps.version.outputs.VERSION }}.vhd`
             to your Azure Storage Account and create a Managed Image from it.
-          files: nixos-azure-${{ steps.version.outputs.VERSION }}.vhd
+          files: nixos-azure-${{ steps.version.outputs.VERSION }}.vhd.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
