@@ -98,8 +98,8 @@ have added your SSH public key before building.
 
 The nightly build always runs in GitHub Actions, but the **smoke-test** and
 **janitor** workflows need to talk to Azure. To keep client secrets out of the
-repo, authentication is done via **GitHub OIDC federation** to an Azure AD
-service principal. The `scripts/bootstrap-azure-ci.sh` helper provisions
+repo, authentication is done via **GitHub OIDC federation** to a Microsoft
+Entra ID (formerly Azure AD) service principal. The `scripts/bootstrap-azure-ci.sh` helper provisions
 everything in Azure and prints the values you need to paste into GitHub.
 
 > Run this **once, locally**, as a user with **Owner** on the target
@@ -147,7 +147,7 @@ creating duplicates.
 What it does:
 
 1. Creates the control RG and `N` run RGs.
-2. Creates an Azure AD application + service principal with **federated
+2. Creates a Microsoft Entra ID application + service principal with **federated
    credentials** trusting tokens from GitHub Actions for:
    * `ref:refs/heads/main` (nightly build + smoke test)
    * `environment:azure-janitor` (daily janitor)
@@ -164,7 +164,7 @@ variables → Actions** in your repo:
 **Secrets**
 
 * `AZURE_CLIENT_ID` — the app registration's `appId` (printed by the script).
-* `AZURE_TENANT_ID` — your AAD tenant ID (printed by the script).
+* `AZURE_TENANT_ID` — your Microsoft Entra ID tenant ID (printed by the script).
 * `AZURE_SUBSCRIPTION_ID` — the subscription ID you passed in.
 
 **Variables**
