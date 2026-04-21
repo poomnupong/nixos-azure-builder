@@ -3,9 +3,16 @@ name: Azure Smoke Test
 # ---------------------------------------------------------------------------
 # End-to-end smoke test for the latest published VHD:
 #   1. pick one of the perpetual run RGs from the pool
-#   2. deploy the latest released VHD as a VM in that RG
-#   3. SSH to the VM and assert the NixOS version string
-#   4. tear the RG down to *empty* (not deleted — see docs/ci-azure.md)
+#   2. stage the released VHD as a page blob in a per-run storage account
+#   3. create a managed image from the page blob
+#   4. deploy a VM from the managed image with a minimal VNet/Subnet/NSG/PIP
+#   5. assert provisioningState = Succeeded and waagent Ready
+#   6. prove inbound networking works with a TCP probe on port 22
+#   7. tear the RG down to *empty* (not deleted — see docs/ci-azure.md)
+#
+# Triggered by a successful run of the Weekly Forge workflow, so every
+# newly-published VHD gets exercised on Azure within minutes of release.
+# Manual dispatch is supported for re-testing the latest release on demand.
 #
 # Teardown is done with a complete-mode deployment of an empty template so
 # that ARM computes the delete DAG itself (disks before NICs before VNets,
@@ -16,9 +23,10 @@ name: Azure Smoke Test
 # ---------------------------------------------------------------------------
 
 on:
-  schedule:
-    # Saturday 18:00 UTC (≈ Sat night US Central)
-    - cron: "0 18 * * 6"
+  workflow_run:
+    workflows: ["Weekly Forge"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -58,7 +66,10 @@ jobs:
     name: Deploy latest VHD and smoke-test
     runs-on: ubuntu-latest
     needs: preflight
-    if: needs.preflight.outputs.configured == 'true'
+    if: |
+      needs.preflight.outputs.configured == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.workflow_run.conclusion == 'success')
     timeout-minutes: 60
 
     steps:
@@ -93,18 +104,255 @@ jobs:
           echo "Selected run RG: $rg (pool size ${#pool[@]}, week $week)"
           echo "rg=$rg" >> "$GITHUB_OUTPUT"
 
-      # --- actual deploy + smoke test would go here ---------------------
-      # Intentionally kept as a placeholder: this PR's focus is the
-      # teardown safety net, and writing a full VHD-upload / VM-create
-      # path requires decisions (managed image vs shared gallery, VM
-      # size, network topology) that belong in a follow-up.
-      - name: Smoke test (placeholder)
+      # --- actual deploy + smoke test -----------------------------------
+      #
+      # Resolve which GitHub Release to test.  On `workflow_run` we want
+      # *that specific run's* release, which we find by matching the
+      # commit SHA the Weekly Forge ran against `targetCommitish` on the
+      # release (softprops/action-gh-release records it).  On manual
+      # dispatch there is no head_sha so we fall back to the latest
+      # release.  Both paths emit a single `.vhd.gz` asset name.
+      - name: Resolve VHD release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ -n "${HEAD_SHA:-}" ]; then
+            echo "Looking for release with targetCommitish=${HEAD_SHA}"
+            tag=$(gh release list --limit 200 \
+                    --json tagName,targetCommitish \
+                    --jq ".[] | select(.targetCommitish==\"${HEAD_SHA}\") | .tagName" \
+                  | head -n1)
+            if [ -z "$tag" ]; then
+              echo "::error::No release found matching commit ${HEAD_SHA}"
+              exit 1
+            fi
+          else
+            echo "Manual dispatch — using latest release"
+            tag=$(gh release view --json tagName --jq '.tagName')
+          fi
+          asset="nixos-azure-${tag}.vhd.gz"
+          # Sanity-check that the expected asset is actually attached.
+          gh release view "$tag" --json assets \
+            --jq ".assets[].name" | grep -qx "$asset" \
+            || { echo "::error::Release $tag has no asset named $asset"; exit 1; }
+          echo "tag=$tag"      >> "$GITHUB_OUTPUT"
+          echo "asset=$asset"  >> "$GITHUB_OUTPUT"
+          # Strip the leading "-" / "." that Azure storage account names
+          # forbid, and keep lowercase alnum only. The tag already is
+          # YYYYMMDD-HHMM so we just drop the dash.
+          echo "vhd_name=nixos-azure-${tag}.vhd" >> "$GITHUB_OUTPUT"
+
+      # Create a fresh storage account in the run RG to hold the page-blob
+      # copy of the VHD. Name must be 3–24 chars, lowercase alnum, and
+      # globally unique — we use the last 7 digits of github.run_id as a
+      # per-run suffix.  Standard_LRS is the cheapest option and is more
+      # than adequate for a one-shot upload.
+      - name: Create staging storage account
+        id: stage
         env:
           RG: ${{ steps.pick.outputs.rg }}
+          LOCATION: ${{ vars.AZURE_LOCATION }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          echo "Would deploy latest VHD into $RG and SSH-smoke-test it here."
-          echo "For now we just prove RBAC works by listing the RG:"
-          az group show -n "$RG" -o table
+          set -euo pipefail
+          suffix="${RUN_ID: -7}"
+          sa="stnixossmoke${suffix}"
+          echo "Creating storage account $sa in $RG ($LOCATION)"
+          az storage account create \
+            -n "$sa" -g "$RG" -l "$LOCATION" \
+            --sku Standard_LRS --kind StorageV2 \
+            --min-tls-version TLS1_2 \
+            --allow-blob-public-access false \
+            --only-show-errors 1>/dev/null
+          # Account keys avoid needing a data-plane RBAC assignment
+          # (the SP has Contributor on the RG, which permits listKeys
+          # but not blob read/write via AAD).
+          key=$(az storage account keys list \
+                  -n "$sa" -g "$RG" --query "[0].value" -o tsv)
+          az storage container create \
+            --account-name "$sa" --account-key "$key" \
+            -n vhds --only-show-errors 1>/dev/null
+          echo "sa=$sa"      >> "$GITHUB_OUTPUT"
+          # Mask the key so it doesn't leak into logs from later steps.
+          echo "::add-mask::$key"
+          echo "key=$key"    >> "$GITHUB_OUTPUT"
+
+      # Download the release asset, decompress it, and upload as a
+      # *page* blob (ARM refuses to create a managed image from a
+      # block blob). The raw VHD is ~5 GB; the ubuntu-latest runner
+      # has well over 20 GB free on / so this fits comfortably.
+      - name: Download and upload VHD as page blob
+        id: blob
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG:      ${{ steps.release.outputs.tag }}
+          ASSET:    ${{ steps.release.outputs.asset }}
+          VHD_NAME: ${{ steps.release.outputs.vhd_name }}
+          SA:       ${{ steps.stage.outputs.sa }}
+          KEY:      ${{ steps.stage.outputs.key }}
+        run: |
+          set -euo pipefail
+          echo "Downloading $ASSET from release $TAG"
+          gh release download "$TAG" -p "$ASSET"
+          echo "Decompressing..."
+          gunzip -f "$ASSET"
+          ls -lh "$VHD_NAME"
+          echo "Uploading page blob..."
+          az storage blob upload \
+            --account-name "$SA" --account-key "$KEY" \
+            --container-name vhds \
+            --name "$VHD_NAME" \
+            --file "$VHD_NAME" \
+            --type page \
+            --overwrite \
+            --only-show-errors 1>/dev/null
+          blob_url=$(az storage blob url \
+                      --account-name "$SA" --account-key "$KEY" \
+                      --container-name vhds \
+                      --name "$VHD_NAME" -o tsv)
+          echo "blob_url=$blob_url" >> "$GITHUB_OUTPUT"
+          # Free disk so subsequent steps have headroom.
+          rm -f "$VHD_NAME"
+
+      # The `azure` format in nixos-generators emits a Gen-1 VHD, so
+      # hyper-v-generation is hard-coded to V1. If we ever switch to
+      # Gen-2 we'll need to flip this to V2 and pick a Gen-2 VM SKU.
+      - name: Create managed image
+        id: image
+        env:
+          RG:       ${{ steps.pick.outputs.rg }}
+          LOCATION: ${{ vars.AZURE_LOCATION }}
+          RUN_ID:   ${{ github.run_id }}
+          BLOB_URL: ${{ steps.blob.outputs.blob_url }}
+        run: |
+          set -euo pipefail
+          img="img-smoke-${RUN_ID}"
+          az image create \
+            -g "$RG" -l "$LOCATION" -n "$img" \
+            --source "$BLOB_URL" \
+            --os-type Linux \
+            --hyper-v-generation V1 \
+            --only-show-errors 1>/dev/null
+          id=$(az image show -g "$RG" -n "$img" --query id -o tsv)
+          echo "image_id=$id" >> "$GITHUB_OUTPUT"
+          echo "image_name=$img" >> "$GITHUB_OUTPUT"
+
+      # Single `az vm create` wires up VNet, Subnet, NIC, Public IP
+      # (Standard SKU, static) and an NSG with an inbound SSH rule.
+      # `--generate-ssh-keys` writes a throwaway keypair on the runner;
+      # we never use it (the smoke signal is a TCP connect, not an
+      # actual SSH session), but the Linux image requires an auth
+      # method so this is the cheapest way to satisfy ARM.
+      - name: Create VM with minimal network
+        id: vm
+        env:
+          RG:       ${{ steps.pick.outputs.rg }}
+          RUN_ID:   ${{ github.run_id }}
+          IMAGE_ID: ${{ steps.image.outputs.image_id }}
+        run: |
+          set -euo pipefail
+          vm="vm-smoke-${RUN_ID}"
+          az vm create \
+            -g "$RG" -n "$vm" \
+            --image "$IMAGE_ID" \
+            --size Standard_B2s \
+            --admin-username nixossmoke \
+            --generate-ssh-keys \
+            --public-ip-sku Standard \
+            --nsg-rule SSH \
+            --vnet-name vnet-smoke \
+            --vnet-address-prefix 10.20.0.0/24 \
+            --subnet default \
+            --subnet-address-prefix 10.20.0.0/27 \
+            --only-show-errors 1>/dev/null
+          echo "vm=$vm" >> "$GITHUB_OUTPUT"
+
+      # `az vm create` already waits for `provisioningState=Succeeded`,
+      # but we re-query explicitly so the assertion is visible in logs
+      # and so a failure here fails the job on a clear message.
+      - name: Assert VM provisioning succeeded
+        env:
+          RG: ${{ steps.pick.outputs.rg }}
+          VM: ${{ steps.vm.outputs.vm }}
+        run: |
+          set -euo pipefail
+          state=$(az vm show -g "$RG" -n "$VM" --query provisioningState -o tsv)
+          echo "provisioningState=$state"
+          [ "$state" = "Succeeded" ] || { echo "::error::VM provisioning did not succeed"; exit 1; }
+
+      # waagent reports Ready once the guest has finished boot and
+      # phoned home to Azure fabric. This is the canonical "Azure
+      # considers this VM healthy" signal; a NixOS-version check
+      # would be strictly weaker and cost us SSH-key management.
+      - name: Wait for waagent Ready
+        env:
+          RG: ${{ steps.pick.outputs.rg }}
+          VM: ${{ steps.vm.outputs.vm }}
+        run: |
+          set -euo pipefail
+          # 20 attempts × 15 s sleep = up to 5 min for waagent to report Ready.
+          for attempt in $(seq 1 20); do
+            status=$(az vm get-instance-view -g "$RG" -n "$VM" \
+                      --query "instanceView.vmAgent.statuses[0].displayStatus" \
+                      -o tsv 2>/dev/null || true)
+            echo "attempt ${attempt}: vmAgent=${status:-<none>}"
+            if [ "$status" = "Ready" ]; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "::error::waagent did not reach Ready within budget"
+          exit 1
+
+      # Final proof that the guest networking stack came up and a
+      # service (sshd, enabled by default in the nixos-generators
+      # `azure` format) is listening. We don't actually SSH — a TCP
+      # connect is sufficient to cover fabric + NSG + guest agent +
+      # at least one systemd unit binding a port.
+      - name: TCP reachability probe (port 22)
+        env:
+          RG: ${{ steps.pick.outputs.rg }}
+          VM: ${{ steps.vm.outputs.vm }}
+        run: |
+          set -euo pipefail
+          pip=$(az vm list-ip-addresses -g "$RG" -n "$VM" \
+                  --query '[0].virtualMachine.network.publicIpAddresses[0].ipAddress' \
+                  -o tsv)
+          echo "Public IP: $pip"
+          # 12 attempts × 10 s sleep = up to 2 min for TCP/22 to open.
+          for attempt in $(seq 1 12); do
+            if nc -zv -w 5 "$pip" 22; then
+              echo "TCP/22 reachable on attempt ${attempt}"
+              exit 0
+            fi
+            echo "attempt ${attempt}: not reachable yet"
+            sleep 10
+          done
+          echo "::error::TCP/22 never became reachable on $pip"
+          exit 1
+
+      # On any failure above, grab the serial console log — single
+      # most useful artifact when a nixpkgs bump breaks first boot.
+      - name: Capture boot diagnostics on failure
+        if: failure()
+        env:
+          RG: ${{ steps.pick.outputs.rg }}
+          VM: ${{ steps.vm.outputs.vm }}
+        run: |
+          set +e
+          az vm boot-diagnostics get-boot-log -g "$RG" -n "$VM" > boot.log
+          ls -lh boot.log || true
+
+      - name: Upload boot diagnostics artifact
+        if: failure() && hashFiles('boot.log') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: boot-diagnostics-${{ github.run_id }}
+          path: boot.log
+          retention-days: 14
 
       # -----------------------------------------------------------------
       # Layer 1 — complete-mode teardown with retry + backoff.
