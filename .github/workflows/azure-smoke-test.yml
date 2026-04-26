@@ -107,17 +107,29 @@ jobs:
             echo "::error::No GitHub Releases found — has Weekly Forge run yet?"
             exit 1
           fi
-          asset="nixos-azimage-${tag}.vhd.gz"
-          url=$(gh release view "$tag" --json assets \
-            -q ".assets[] | select(.name==\"$asset\") | .url")
-          if [ -z "$url" ]; then
-            echo "::error::Release $tag has no asset named $asset"
+          # Resolve the gzipped VHD asset by pattern rather than by an
+          # exact filename. The asset has been renamed historically (e.g.
+          # nixos-azure-* -> nixos-azimage-*), and old releases keep their
+          # original name; matching *.vhd.gz keeps the smoke test working
+          # across such renames as long as exactly one such asset exists.
+          mapfile -t assets < <(gh release view "$tag" --json assets \
+            -q '.assets[] | select(.name | test("\\.vhd\\.gz$")) | .name')
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::Release $tag has no *.vhd.gz asset"
             exit 1
           fi
+          if [ "${#assets[@]}" -gt 1 ]; then
+            echo "::error::Release $tag has multiple *.vhd.gz assets: ${assets[*]}"
+            exit 1
+          fi
+          asset="${assets[0]}"
+          url=$(gh release view "$tag" --json assets \
+            -q ".assets[] | select(.name==\"$asset\") | .url")
+          vhd="${asset%.gz}"
           echo "tag=$tag"     >> "$GITHUB_OUTPUT"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
           echo "url=$url"     >> "$GITHUB_OUTPUT"
-          echo "vhd=nixos-azimage-${tag}.vhd" >> "$GITHUB_OUTPUT"
+          echo "vhd=$vhd"     >> "$GITHUB_OUTPUT"
 
       - name: Stage VHD in Azure (idempotent upload)
         if: steps.preflight.outputs.ok == 'true'
