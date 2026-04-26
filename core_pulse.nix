@@ -65,4 +65,11 @@
 
   # Required by nixos-generators; do not remove.
   system.stateVersion = "24.11";
+
+  # Set an explicit disk size to prevent the nixpkgs azure-image.nix postVM
+  # script from running `truncate` on the already-converted VHD file.
+  # When diskSize is "auto" (the default), that script appends 512 MB of zeros
+  # after the VHD footer, which causes Azure to reject the image with:
+  #   "Disk is expected to have cookie value 'conectix'."
+  virtualisation.diskSize = 8192; # 8 GiB
 }
