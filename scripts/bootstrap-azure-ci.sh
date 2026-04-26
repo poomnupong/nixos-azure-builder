@@ -115,7 +115,6 @@ ensure_federated_credential() {
   fi
 }
 ensure_federated_credential "gh-main"       "repo:${GITHUB_REPO}:ref:refs/heads/main"
-ensure_federated_credential "gh-schedule"   "repo:${GITHUB_REPO}:ref:refs/heads/main"
 ensure_federated_credential "gh-janitor"    "repo:${GITHUB_REPO}:environment:azure-janitor"
 
 # ---------------------------------------------------------------------------
