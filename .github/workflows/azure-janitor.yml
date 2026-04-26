@@ -38,10 +38,33 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      - name: Preflight — verify Azure CI is bootstrapped
+        id: preflight
+        env:
+          AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RUN_RGS:         ${{ vars.AZURE_RUN_RGS }}
+        run: |
+          set -u
+          missing=()
+          [ -n "${AZURE_CLIENT_ID:-}" ]       || missing+=("secret AZURE_CLIENT_ID")
+          [ -n "${AZURE_TENANT_ID:-}" ]       || missing+=("secret AZURE_TENANT_ID")
+          [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] || missing+=("secret AZURE_SUBSCRIPTION_ID")
+          [ -n "${AZURE_RUN_RGS:-}" ]         || missing+=("var AZURE_RUN_RGS")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice::Azure CI is not bootstrapped — skipping. Missing: ${missing[*]}. Run scripts/bootstrap-azure-ci.sh to configure."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
+        if: steps.preflight.outputs.ok == 'true'
         uses: actions/checkout@v4
 
       - name: Azure login (OIDC)
+        if: steps.preflight.outputs.ok == 'true'
         uses: azure/login@v2
         with:
           client-id:       ${{ secrets.AZURE_CLIENT_ID }}
@@ -49,16 +72,13 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Sweep run RGs
+        if: steps.preflight.outputs.ok == 'true'
         id: sweep
         env:
           AZURE_RUN_RGS: ${{ vars.AZURE_RUN_RGS }}
         run: |
           set -u
           read -r -a pool <<< "$AZURE_RUN_RGS"
-          if [ "${#pool[@]}" -eq 0 ]; then
-            echo "AZURE_RUN_RGS variable is empty" >&2
-            exit 1
-          fi
 
           stuck_rgs=()
           stuck_report=""
@@ -110,7 +130,7 @@ jobs:
           fi
 
       - name: Open or update tracking issue
-        if: steps.sweep.outputs.stuck == 'true'
+        if: steps.preflight.outputs.ok == 'true' && steps.sweep.outputs.stuck == 'true'
         uses: actions/github-script@v7
         env:
           STUCK_LIST: ${{ steps.sweep.outputs.stuck_list }}
@@ -155,7 +175,7 @@ jobs:
             }
 
       - name: Fail job if any RG is still stuck
-        if: steps.sweep.outputs.stuck == 'true'
+        if: steps.preflight.outputs.ok == 'true' && steps.sweep.outputs.stuck == 'true'
         run: |
           echo "::error::One or more run RGs are still not empty: ${{ steps.sweep.outputs.stuck_list }}"
           exit 1

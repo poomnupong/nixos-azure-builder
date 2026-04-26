@@ -36,10 +36,33 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Preflight — verify Azure CI is bootstrapped
+        id: preflight
+        env:
+          AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_RUN_RGS:         ${{ vars.AZURE_RUN_RGS }}
+        run: |
+          set -u
+          missing=()
+          [ -n "${AZURE_CLIENT_ID:-}" ]       || missing+=("secret AZURE_CLIENT_ID")
+          [ -n "${AZURE_TENANT_ID:-}" ]       || missing+=("secret AZURE_TENANT_ID")
+          [ -n "${AZURE_SUBSCRIPTION_ID:-}" ] || missing+=("secret AZURE_SUBSCRIPTION_ID")
+          [ -n "${AZURE_RUN_RGS:-}" ]         || missing+=("var AZURE_RUN_RGS")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::notice::Azure CI is not bootstrapped — skipping. Missing: ${missing[*]}. Run scripts/bootstrap-azure-ci.sh to configure."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout repository
+        if: steps.preflight.outputs.ok == 'true'
         uses: actions/checkout@v4
 
       - name: Azure login (OIDC)
+        if: steps.preflight.outputs.ok == 'true'
         uses: azure/login@v2
         with:
           client-id:       ${{ secrets.AZURE_CLIENT_ID }}
@@ -49,16 +72,13 @@ jobs:
       # Pick a run RG from the pool based on the ISO week number so the
       # same RG isn't hammered every week and we exercise both slots.
       - name: Select run RG from pool
+        if: steps.preflight.outputs.ok == 'true'
         id: pick
         env:
           AZURE_RUN_RGS: ${{ vars.AZURE_RUN_RGS }}
         run: |
           set -eu
           read -r -a pool <<< "$AZURE_RUN_RGS"
-          if [ "${#pool[@]}" -eq 0 ]; then
-            echo "AZURE_RUN_RGS variable is empty" >&2
-            exit 1
-          fi
           week=$(date -u +%V)
           # `10#` forces base-10 parsing; ISO week numbers like "08"/"09"
           # would otherwise be treated as invalid octal by bash arithmetic.
@@ -73,6 +93,7 @@ jobs:
       # path requires decisions (managed image vs shared gallery, VM
       # size, network topology) that belong in a follow-up.
       - name: Smoke test (placeholder)
+        if: steps.preflight.outputs.ok == 'true'
         env:
           RG: ${{ steps.pick.outputs.rg }}
         run: |
@@ -88,7 +109,7 @@ jobs:
       # RG is not deleted.
       # -----------------------------------------------------------------
       - name: Teardown run RG (complete-mode, with retry)
-        if: always()
+        if: always() && steps.preflight.outputs.ok == 'true'
         env:
           RG: ${{ steps.pick.outputs.rg }}
         run: |
@@ -119,7 +140,7 @@ jobs:
       # not, which surfaces as a red workflow → GitHub notifies you.
       # -----------------------------------------------------------------
       - name: Verify run RG is empty
-        if: always()
+        if: always() && steps.preflight.outputs.ok == 'true'
         env:
           RG: ${{ steps.pick.outputs.rg }}
         run: |
