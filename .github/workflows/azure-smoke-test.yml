@@ -150,26 +150,60 @@ jobs:
           az storage container create \
             --account-name "$SA" --name vhds \
             --auth-mode login >/dev/null
-          # Skip download/upload if the blob already exists *and* is a
-          # page blob. Azure managed images require the source VHD to be
-          # a page blob in fixed-VHD format; a block blob upload triggers
-          # `(InvalidParameter) ... cookie value 'conectix'` from
-          # `az image create`. If a previous run staged the VHD as a
-          # block blob (the historical default), drop it and re-upload.
+          # Skip download/upload only when the blob already exists, is a
+          # page blob, *and* its trailing VHD footer is intact. Azure
+          # managed images require the source VHD to be a page blob in
+          # fixed-VHD format; a block blob upload or a corrupt footer
+          # triggers `(InvalidParameter) ... cookie value 'conectix'`
+          # from `az image create`. If a previous run staged the VHD as
+          # a block blob (the historical default) or left a partial /
+          # corrupt page blob behind, drop it and re-upload.
           exists=$(az storage blob exists \
             --account-name "$SA" --container-name vhds --name "$VHD" \
             --auth-mode login --query exists -o tsv)
           blob_type=""
+          blob_size=""
           if [ "$exists" = "true" ]; then
             blob_type=$(az storage blob show \
               --account-name "$SA" --container-name vhds --name "$VHD" \
               --auth-mode login --query properties.blobType -o tsv)
+            blob_size=$(az storage blob show \
+              --account-name "$SA" --container-name vhds --name "$VHD" \
+              --auth-mode login --query properties.contentLength -o tsv)
           fi
-          if [ "$exists" = "true" ] && [ "$blob_type" = "PageBlob" ]; then
-            echo "blob $VHD already staged as page blob — skipping upload"
+          # Validate that, if a PageBlob is already staged, its trailing 512-byte
+          # VHD footer starts with the ASCII magic "conectix". Azure's image
+          # resource provider rejects the source blob with `InvalidParameter ...
+          # cookie value 'conectix'` if that footer is missing/corrupt, and the
+          # earlier "type == PageBlob" check alone is not sufficient: a
+          # truncated upload, an interrupted prior run, or a blob that was
+          # converted from another type can all leave a PageBlob whose footer
+          # is invalid. Detect that here and force a fresh upload.
+          footer_ok="false"
+          if [ "$exists" = "true" ] && [ "$blob_type" = "PageBlob" ] \
+             && [ -n "$blob_size" ] && [ "$blob_size" -ge 512 ]; then
+            footer_start=$((blob_size - 512))
+            footer_file=$(mktemp)
+            if az storage blob download \
+                 --account-name "$SA" --container-name vhds --name "$VHD" \
+                 --auth-mode login --no-progress \
+                 --start-range "$footer_start" --end-range $((blob_size - 1)) \
+                 --file "$footer_file" >/dev/null 2>&1 \
+               && [ "$(head -c 8 "$footer_file")" = "conectix" ]; then
+              footer_ok="true"
+            else
+              echo "staged blob $VHD has missing/invalid 'conectix' VHD footer — replacing"
+            fi
+            rm -f "$footer_file"
+          fi
+          if [ "$exists" = "true" ] && [ "$blob_type" = "PageBlob" ] \
+             && [ "$footer_ok" = "true" ]; then
+            echo "blob $VHD already staged as page blob with valid VHD footer — skipping upload"
           else
             if [ "$exists" = "true" ]; then
-              echo "blob $VHD exists but is type '$blob_type' (need PageBlob) — replacing"
+              if [ "$blob_type" != "PageBlob" ]; then
+                echo "blob $VHD exists but is type '$blob_type' (need PageBlob) — replacing"
+              fi
               az storage blob delete \
                 --account-name "$SA" --container-name vhds --name "$VHD" \
                 --auth-mode login >/dev/null
