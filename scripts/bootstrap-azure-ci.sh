@@ -119,11 +119,6 @@ ensure_federated_credential() {
 }
 ensure_federated_credential "gh-main"       "repo:${GITHUB_REPO}:ref:refs/heads/main"
 ensure_federated_credential "gh-janitor"    "repo:${GITHUB_REPO}:environment:azure-janitor"
-# TEMPORARY: lets the copilot iteration branch run the smoke-test workflow via
-# the temporary `push:` trigger in azure-smoke-test.yml. Remove this line (and
-# delete the cred in Azure: `az ad app federated-credential delete --id "$APP_ID"
-# --federated-credential-id gh-copilot-iter`) before the final merge to main.
-ensure_federated_credential "gh-copilot-iter" "repo:${GITHUB_REPO}:ref:refs/heads/copilot/diagnose-fix-smoke-test-issues"
 
 # ---------------------------------------------------------------------------
 # 3. RBAC — Contributor on each run RG, Reader on control RG.
