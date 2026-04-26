@@ -20,13 +20,6 @@ on:
     # Saturday 18:00 UTC (≈ Sat night US Central)
     - cron: "0 18 * * 6"
   workflow_dispatch:
-  # TEMPORARY: branch-scoped push trigger used while iteratively
-  # diagnosing+fixing the smoke test on the PR branch. This block
-  # MUST be removed before merging to main so that main keeps its
-  # "schedule + manual" semantics.
-  push:
-    branches:
-      - copilot/diagnose-fix-smoke-test-issues
 
 permissions:
   id-token: write      # OIDC federation to Azure
