@@ -189,7 +189,13 @@ jobs:
               --query accessSAS -o tsv)
             # azcopy is preinstalled on ubuntu-latest GitHub-hosted runners.
             echo "uploading VHD via AzCopy"
+            # azcopy wants to create ~/.azcopy/{plans,logs}; on hosted
+            # runners /home/runner/.azcopy can end up owned by root from
+            # earlier steps (e.g. azure/login), so point both locations
+            # at writable temp dirs to avoid "permission denied" on
+            # mkdir /home/runner/.azcopy/plans.
             AZCOPY_LOG_LOCATION=$(mktemp -d) \
+            AZCOPY_JOB_PLAN_LOCATION=$(mktemp -d) \
               azcopy copy "$VHD" "$sas" --blob-type PageBlob
             echo "revoking write SAS"
             az disk revoke-access -g "$RG" -n "$DISK_NAME" >/dev/null
