@@ -154,6 +154,21 @@ if [[ -z "$STAGING_SA" ]]; then
   STAGING_SA="stnixoscistg$(openssl rand -hex 5)"
 fi
 echo "==> Ensuring staging storage account '$STAGING_SA' in $CONTROL_RG"
+# Network posture for the staging SA:
+#   * public-network-access = Enabled  — the GitHub-hosted runner uploads
+#     the VHD over the public endpoint; we don't have a private link.
+#   * default-action         = Allow   — runner public IPs are dynamic and
+#     unknown ahead of time, so an IP allow-list is impractical. The data
+#     plane is still gated by AAD RBAC ('Storage Blob Data Contributor'
+#     scoped to this SA only) and `--allow-blob-public-access false`
+#     keeps anonymous reads off.
+#   * bypass                 = AzureServices — lets `az image create` and
+#     other ARM services read the staged VHD even if the default action
+#     ever flips to Deny.
+# These must be set explicitly: tenant-level Azure Policy increasingly
+# lands new accounts at publicNetworkAccess=Disabled / defaultAction=Deny,
+# which causes the smoke test's `az storage blob upload` to fail with
+# "The request may be blocked by network rules of storage account."
 if ! az storage account show -n "$STAGING_SA" -g "$CONTROL_RG" >/dev/null 2>&1; then
   az storage account create \
     --name "$STAGING_SA" \
@@ -164,8 +179,24 @@ if ! az storage account show -n "$STAGING_SA" -g "$CONTROL_RG" >/dev/null 2>&1; 
     --access-tier Hot \
     --allow-blob-public-access false \
     --min-tls-version TLS1_2 \
+    --public-network-access Enabled \
+    --default-action Allow \
+    --bypass AzureServices \
     --tags purpose=nixos-ci role=staging >/dev/null
 fi
+
+# Reconcile network posture on every bootstrap run, so that drift on an
+# existing account (manual edit, policy remediation, etc.) is fixed by
+# simply re-running the bootstrap script.
+echo "==> Reconciling network posture on $STAGING_SA"
+az storage account update \
+  --name "$STAGING_SA" \
+  --resource-group "$CONTROL_RG" \
+  --public-network-access Enabled \
+  --default-action Allow \
+  --bypass AzureServices \
+  --allow-blob-public-access false \
+  --min-tls-version TLS1_2 >/dev/null
 
 echo "==> Ensuring blob container 'vhds' on $STAGING_SA"
 az storage container create \

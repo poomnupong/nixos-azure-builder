@@ -82,7 +82,15 @@ The script:
    control RG.
 4. Creates the **staging storage account** in the control RG and
    grants the SP `Storage Blob Data Contributor` on it (data-plane
-   RBAC, needed so the workflow can upload the VHD blob).
+   RBAC, needed so the workflow can upload the VHD blob). The SA is
+   pinned to `publicNetworkAccess=Enabled`, `networkAcls.defaultAction=Allow`
+   and `bypass=AzureServices`; data-plane access is gated solely by
+   AAD RBAC and `allow-blob-public-access=false`. These settings are
+   reconciled on every bootstrap run, so re-running the script also
+   repairs an SA whose network posture has drifted (for example, after
+   a tenant Azure Policy remediation flipped it to `Deny`/`Disabled`,
+   which surfaces in the smoke test as `The request may be blocked by
+   network rules of storage account` during VHD upload).
 5. Creates a monthly subscription budget with an email action group
    (Layer 4).
 6. Prints the GitHub secrets and variables you need to set.
