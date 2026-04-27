@@ -248,9 +248,16 @@ jobs:
           IMG="smoke-img-${TAG}"
           # Idempotent: if the image already exists in this RG, reuse it.
           if ! az image show -g "$RG" -n "$IMG" >/dev/null 2>&1; then
+            # Declare both SCSI and NVMe in the image's
+            # supportedDiskControllerTypes so the image is portable across
+            # current and future Azure VM SKUs (v6/v7 series default to NVMe;
+            # older series are SCSI-only). az vm create still has to pick one
+            # via --disk-controller-type, but with both declared here a SKU
+            # change won't require rebuilding/recreating the image.
             az image create -g "$RG" -n "$IMG" \
               --os-type Linux \
               --hyper-v-generation V2 \
+              --supported-disk-controller-types SCSI,NVMe \
               --source "$DISK_ID" >/dev/null
           fi
           echo "image=$IMG" >> "$GITHUB_OUTPUT"
@@ -302,14 +309,12 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          # Easv7 VMs default to the NVMe remote-disk controller, but our
-          # managed image (created from a V2 hyper-v-gen disk) only declares
-          # SCSI support. Easv7 supports both controllers, so force SCSI to
-          # match the image. Without this, az vm create fails with:
-          #   "The VM size 'Standard_E8-2as_v7' cannot boot with OS image or
-          #    disk. ... disk controller types supported by the OS image or
-          #    disk is one of the supported disk controller types for the VM
-          #    size".
+          # The managed image declares both SCSI and NVMe in its
+          # supportedDiskControllerTypes, so it's portable across SKUs.
+          # Easv7 defaults to the NVMe controller, but pin to SCSI here
+          # because the current NixOS image is only SCSI-validated end-to-end.
+          # When a future SKU change requires NVMe (or we validate NVMe in
+          # the image), drop this flag or switch it to NVMe.
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
             --size Standard_E8-2as_v7 \
