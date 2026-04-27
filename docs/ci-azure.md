@@ -131,7 +131,7 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    on the same release are cheap.
 3. **Create Managed Image.** `az image create` from the blob URL into
    the selected run RG (`hyper-v-generation V2`, `os-type Linux`).
-4. **Boot VM.** A `Standard_B1s` VM is created from the image with an
+4. **Boot VM.** A `Standard_E8-2as_v7` VM is created from the image with an
    ephemeral ed25519 SSH key generated on the runner. Inbound SSH is
    restricted by NSG to the runner's egress IP only.
 5. **Assert.** SSH in, run `cat /etc/os-release` and `nixos-version`,
