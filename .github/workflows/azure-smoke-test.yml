@@ -20,20 +20,6 @@ on:
     # Saturday 18:00 UTC (≈ Sat night US Central)
     - cron: "0 18 * * 6"
   workflow_dispatch:
-  # Auto-dispatch on pushes to the long-lived agent iteration branch.
-  # This lets the Copilot agent run a fix → smoke-test → read-logs loop
-  # without a human dispatch in between. Path filter keeps unrelated
-  # commits (NixOS modules, docs, weekly_forge changes, etc.) from
-  # consuming Azure quota; OIDC federation only trusts this ref + main
-  # (see docs/ci-azure.md "Privileged refs"), and the preflight step
-  # below enforces the same allow-list at runtime.
-  push:
-    branches:
-      - copilot/smoke-dev
-    paths:
-      - ".github/workflows/azure-smoke-test.yml"
-      - "scripts/azure/**"
-      - "scripts/bootstrap-azure-ci.sh"
 
 permissions:
   id-token: write      # OIDC federation to Azure
@@ -51,19 +37,17 @@ jobs:
 
     steps:
       - name: Preflight — verify ref is allowed
-        # OIDC federation is only configured for `main` (production smoke)
-        # and `copilot/smoke-dev` (long-lived agent iteration branch).
+        # OIDC federation is only configured for `main`.
         # Refuse other refs early with a clear message instead of failing
-        # opaquely at `azure/login`. Both branches share the same RG pool
-        # and RBAC, so blast radius is identical.
+        # opaquely at `azure/login`.
         env:
           REF: ${{ github.ref }}
         run: |
           set -eu
           case "$REF" in
-            refs/heads/main|refs/heads/copilot/smoke-dev) ;;
+            refs/heads/main) ;;
             *)
-              echo "::error::Azure smoke test only runs from refs/heads/main or refs/heads/copilot/smoke-dev (got: $REF). OIDC federation is not configured for other refs; see scripts/bootstrap-azure-ci.sh."
+              echo "::error::Azure smoke test only runs from refs/heads/main (got: $REF). OIDC federation is not configured for other refs; see scripts/bootstrap-azure-ci.sh."
               exit 1
               ;;
           esac
@@ -126,7 +110,6 @@ jobs:
           require_flag "--hyper-v-generation"   az disk create
           require_flag "--access-level"         az disk grant-access
           require_flag "--hyper-v-generation"   az image create
-          require_flag "--disk-controller-type" az vm create
 
       - name: Azure login (OIDC)
         if: steps.preflight.outputs.ok == 'true'
@@ -271,9 +254,10 @@ jobs:
             # `az image create` all reject `--supported-disk-controller-types`
             # (verified on azure-cli 2.85.0; see the CLI sanity preflight
             # step earlier in this workflow). The disk controller is
-            # selected per-VM via `az vm create --disk-controller-type`
-            # below; the smoke test therefore stays pinned to a v6 SKU +
-            # SCSI, which is what the published image is validated for.
+            # selected per-VM at deployment time; the smoke test uses a
+            # v6 NVMe-only SKU to validate the NVMe boot path (NixOS
+            # initrd includes both NVMe and SCSI drivers via
+            # core_pulse.nix).
             disk_id=$(az disk create -g "$RG" -n "$DISK_NAME" \
               --location "$LOCATION" \
               --upload-type Upload \
@@ -323,9 +307,8 @@ jobs:
           # Idempotent: if the image already exists in this RG, reuse it.
           if ! az image show -g "$RG" -n "$IMG" >/dev/null 2>&1; then
             # Note: `az image create` does not expose
-            # supportedDiskControllerTypes; the disk controller is selected
-            # on the VM via `az vm create --disk-controller-type` (pinned to
-            # SCSI below to match this SCSI-validated NixOS image).
+            # supportedDiskControllerTypes; the disk controller is
+            # determined by the VM SKU at deployment time.
             az image create -g "$RG" -n "$IMG" \
               --os-type Linux \
               --hyper-v-generation V2 \
@@ -380,16 +363,15 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          # The managed image is SCSI-based, so the VM SKU must support
-          # SCSI disk controllers.  Azure v6 SKUs (Dsv6/Esv6) are
-          # NVMe-only and reject --disk-controller-type SCSI (run
-          # 25022815957).  Use a v5 SKU instead: Standard_D2as_v5 is a
-          # small (2 vCPU / 8 GiB) AMD SKU that supports SCSI, is
-          # available on the smoke subscription, and keeps CI cost low.
+          # Use a v6 NVMe VM to validate that the image boots correctly
+          # with the NVMe disk controller (drivers loaded via
+          # core_pulse.nix).  Standard_D2s_v6 is a small (2 vCPU /
+          # 8 GiB) Intel SKU; v6 Intel SKUs are NVMe-only, so no
+          # --disk-controller-type flag is needed (NVMe is the only
+          # option and the default).
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
-            --size Standard_D2as_v5 \
-            --disk-controller-type SCSI \
+            --size Standard_D2s_v6 \
             --admin-username azureuser \
             --ssh-key-values "$SSH_DIR/id.pub" \
             --public-ip-sku Standard \

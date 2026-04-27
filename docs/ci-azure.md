@@ -115,20 +115,15 @@ OIDC tokens issued for these subjects only:
 | Subject | Used by | Notes |
 |---------|---------|-------|
 | `ref:refs/heads/main` | `azure-smoke-test.yml` (production) | Standard release validation. |
-| `ref:refs/heads/copilot/smoke-dev` | `azure-smoke-test.yml` (agent iteration) | Long-lived dev branch. Lets the Copilot agent dispatch the smoke test against Azure end-to-end without merging unverified changes to `main`. Same RG pool, same RBAC, same blast radius as `main`. Pushes to this branch that touch the smoke-test workflow, `scripts/azure/**`, or `scripts/bootstrap-azure-ci.sh` auto-dispatch the smoke test (no manual `workflow_dispatch` needed). |
 | `environment:azure-janitor` | `azure-janitor.yml` | Daily cleanup. |
 
-Treat `copilot/smoke-dev` as a privileged ref (same protection
-posture as `main`): pushes to it can talk to Azure with full
-Contributor access on the run RGs. The smoke-test workflow
-explicitly refuses to run from any other ref, so adding more
-privileged branches requires both a new federated credential **and**
-a workflow change.
+The smoke-test workflow explicitly refuses to run from any ref other
+than `main`, so adding more privileged branches requires both a new
+federated credential **and** a workflow change.
 
-The `azure-smoke-test.yml` workflow is the only one that uses the
-`copilot/smoke-dev` federation; `weekly_forge.yml` does not touch
-Azure, and the janitor authenticates via the `azure-janitor`
-environment.
+The `azure-smoke-test.yml` workflow authenticates via the `main`
+federation; `weekly_forge.yml` does not touch Azure, and the janitor
+authenticates via the `azure-janitor` environment.
 
 ## What happens when an RG is stuck
 
@@ -166,11 +161,11 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    without networking exceptions. Note: the Azure CLI exposes no flag
    to declare `supportedCapabilities.diskControllerTypes` on a managed
    disk or image (verified on `azure-cli` 2.85.0 — a runtime preflight
-   in the workflow guards this), so the smoke test stays pinned to a
-   v6 SKU + SCSI; v7 NVMe-only SKUs are not supported today.
+   in the workflow guards this), so the disk controller is determined by
+   the VM SKU at deployment time.
 3. **Create Managed Image.** `az image create --source <disk-id>`
    into the same run RG (`hyper-v-generation V2`, `os-type Linux`).
-4. **Boot VM.** A `Standard_E8-2as_v6` VM is created from the image with an
+4. **Boot VM.** A `Standard_D2s_v6` (NVMe) VM is created from the image with an
    ephemeral ed25519 SSH key generated on the runner. Inbound SSH is
    restricted by NSG to the runner's egress IP only.
 5. **Assert.** SSH in, run `cat /etc/os-release` and `nixos-version`,
