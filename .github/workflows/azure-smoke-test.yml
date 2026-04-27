@@ -248,16 +248,13 @@ jobs:
           IMG="smoke-img-${TAG}"
           # Idempotent: if the image already exists in this RG, reuse it.
           if ! az image show -g "$RG" -n "$IMG" >/dev/null 2>&1; then
-            # Declare both SCSI and NVMe in the image's
-            # supportedDiskControllerTypes so the image is portable across
-            # current and future Azure VM SKUs (v6/v7 series default to NVMe;
-            # older series are SCSI-only). az vm create still has to pick one
-            # via --disk-controller-type, but with both declared here a SKU
-            # change won't require rebuilding/recreating the image.
+            # Note: `az image create` does not expose
+            # supportedDiskControllerTypes; the disk controller is selected
+            # on the VM via `az vm create --disk-controller-type` (pinned to
+            # SCSI below to match this SCSI-validated NixOS image).
             az image create -g "$RG" -n "$IMG" \
               --os-type Linux \
               --hyper-v-generation V2 \
-              --supported-disk-controller-types SCSI,NVMe \
               --source "$DISK_ID" >/dev/null
           fi
           echo "image=$IMG" >> "$GITHUB_OUTPUT"
