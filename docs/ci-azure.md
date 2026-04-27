@@ -125,17 +125,31 @@ The weekly smoke test exercises the full release pipeline end-to-end:
 1. **Resolve latest release.** `gh release list/view` finds the most
    recent tag and the matching `nixos-azimage-<tag>.vhd.gz` asset.
 2. **Stage VHD as a managed disk.** Download + decompress on the
-   runner, then provision an empty managed disk with
-   `az disk create --for-upload --upload-size-bytes <stat -c %s>` in
-   the selected run RG. ARM hands out a short-lived write SAS via
-   `az disk grant-access`; AzCopy streams the VHD into it as a page
-   blob; `az disk revoke-access` seals the disk. No customer-owned
-   storage account is on the data path, so tenant policies that
-   forbid `publicNetworkAccess=Enabled` on storage accounts are
-   satisfied without networking exceptions.
+   runner, then provision an empty managed disk in the selected run
+   RG:
+
+   ```sh
+   az disk create -g "$RG" -n "$DISK_NAME" \
+     --location "$LOCATION" \
+     --for-upload --upload-size-bytes "$(stat -c %s "$VHD")" \
+     --hyper-v-generation V2 --os-type Linux \
+     --supported-disk-controller-types SCSI NVMe
+   ```
+
+   The `--supported-disk-controller-types SCSI NVMe` flag makes the
+   staged disk — and the managed image created from it, which
+   inherits `supportedCapabilities.diskControllerTypes` from its
+   source — bootable on both SCSI (v6) and NVMe (v6/v7) SKUs.
+   Classic `az image create` does not expose this flag, so it has to
+   be set on the source disk. ARM hands out a short-lived write SAS
+   via `az disk grant-access`; AzCopy streams the VHD into it as a
+   page blob; `az disk revoke-access` seals the disk. No
+   customer-owned storage account is on the data path, so tenant
+   policies that forbid `publicNetworkAccess=Enabled` on storage
+   accounts are satisfied without networking exceptions.
 3. **Create Managed Image.** `az image create --source <disk-id>`
    into the same run RG (`hyper-v-generation V2`, `os-type Linux`).
-4. **Boot VM.** A `Standard_E8-2as_v7` VM is created from the image with an
+4. **Boot VM.** A `Standard_E8-2as_v6` VM is created from the image with an
    ephemeral ed25519 SSH key generated on the runner. Inbound SSH is
    restricted by NSG to the runner's egress IP only.
 5. **Assert.** SSH in, run `cat /etc/os-release` and `nixos-version`,

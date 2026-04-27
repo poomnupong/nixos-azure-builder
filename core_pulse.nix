@@ -72,4 +72,33 @@
   # after the VHD footer, which causes Azure to reject the image with:
   #   "Disk is expected to have cookie value 'conectix'."
   virtualisation.diskSize = 8192; # 8 GiB
+
+  # ---------------------------------------------------------------------------
+  # Disk controller support (SCSI + NVMe)
+  #
+  # Azure VM families differ in which remote-disk controller they expose to
+  # the guest:
+  #   * Older series (Dasv5/Easv5 and earlier): Hyper-V SCSI only
+  #     (root appears as /dev/sda).
+  #   * v6 series (Dasv6/Easv6): Hyper-V SCSI by default, or NVMe when
+  #     deployed with `az vm create --disk-controller-type NVMe`.
+  #   * v7 series (Dasv7/Easv7): NVMe-only (root appears as /dev/nvme0n1).
+  # To make a single image bootable on all of them, the initramfs must contain
+  # the drivers for both controllers; otherwise stage-1 cannot find the root
+  # filesystem on whichever controller Azure picked. nixos-generators' azure
+  # profile normally pulls these in, but we list them explicitly so the image
+  # remains controller-agnostic even if the upstream profile changes.
+  #
+  # Root is identified by label/UUID (set by the azure profile), so the
+  # difference between /dev/sda and /dev/nvme0n1 is irrelevant once the
+  # driver is loaded.
+  boot.initrd.availableKernelModules = [
+    # NVMe (v7 SKUs, and v6 when --disk-controller-type NVMe)
+    "nvme"
+    "nvme_core"
+    # Hyper-V SCSI / VMBus / netvsc (v5 and earlier, default path on v6)
+    "hv_storvsc"
+    "hv_vmbus"
+    "hv_netvsc"
+  ];
 }

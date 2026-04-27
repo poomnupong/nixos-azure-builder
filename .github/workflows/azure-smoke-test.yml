@@ -200,12 +200,20 @@ jobs:
             # core_pulse.nix.
             size=$(stat -c %s "$VHD")
             echo "creating managed disk $DISK_NAME (--for-upload, $size bytes)"
+            # Declare both SCSI and NVMe as supported disk controller types
+            # on the staged managed disk. The managed image created in the
+            # next step inherits supportedCapabilities.diskControllerTypes
+            # from its source disk, so setting it here propagates to the
+            # image and lets `az vm create --disk-controller-type
+            # {SCSI|NVMe}` work on both v6 (SCSI/NVMe) and v7 (NVMe-only)
+            # SKUs.
             disk_id=$(az disk create -g "$RG" -n "$DISK_NAME" \
               --location "$LOCATION" \
               --for-upload \
               --upload-size-bytes "$size" \
               --hyper-v-generation V2 \
               --os-type Linux \
+              --supported-disk-controller-types SCSI NVMe \
               --query id -o tsv)
             echo "requesting write SAS"
             sas=$(az disk grant-access -g "$RG" -n "$DISK_NAME" \
@@ -306,15 +314,17 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          # The managed image declares both SCSI and NVMe in its
-          # supportedDiskControllerTypes, so it's portable across SKUs.
-          # Easv7 defaults to the NVMe controller, but pin to SCSI here
-          # because the current NixOS image is only SCSI-validated end-to-end.
-          # When a future SKU change requires NVMe (or we validate NVMe in
-          # the image), drop this flag or switch it to NVMe.
+          # The image declares support for both SCSI and NVMe (drivers are
+          # in the initrd via core_pulse.nix, and the staged disk is
+          # created with --supported-disk-controller-types SCSI NVMe), so
+          # in principle the smoke test can boot on either v6 (SCSI/NVMe)
+          # or v7 (NVMe-only). We keep this run pinned to a v6 SKU with
+          # --disk-controller-type SCSI because that is the path
+          # validated end-to-end; flip to a v7 SKU + NVMe to exercise the
+          # NVMe path once it has its own green run history.
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
-            --size Standard_E8-2as_v7 \
+            --size Standard_E8-2as_v6 \
             --disk-controller-type SCSI \
             --admin-username azureuser \
             --ssh-key-values "$SSH_DIR/id.pub" \
