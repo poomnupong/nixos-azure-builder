@@ -194,9 +194,17 @@ jobs:
             # earlier steps (e.g. azure/login), so point both locations
             # at writable temp dirs to avoid "permission denied" on
             # mkdir /home/runner/.azcopy/plans.
-            AZCOPY_LOG_LOCATION=$(mktemp -d) \
-            AZCOPY_JOB_PLAN_LOCATION=$(mktemp -d) \
+            azcopy_log_location=$(mktemp -d)
+            azcopy_job_plan_location=$(mktemp -d)
+            cleanup_azcopy_temp_dirs() {
+              rm -rf "$azcopy_log_location" "$azcopy_job_plan_location"
+            }
+            trap cleanup_azcopy_temp_dirs EXIT
+            AZCOPY_LOG_LOCATION="$azcopy_log_location" \
+            AZCOPY_JOB_PLAN_LOCATION="$azcopy_job_plan_location" \
               azcopy copy "$VHD" "$sas" --blob-type PageBlob
+            trap - EXIT
+            cleanup_azcopy_temp_dirs
             echo "revoking write SAS"
             az disk revoke-access -g "$RG" -n "$DISK_NAME" >/dev/null
             rm -f "$VHD"
