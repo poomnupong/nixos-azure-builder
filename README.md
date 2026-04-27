@@ -85,9 +85,28 @@ ls result/
 
 ## Deploying to Azure
 
-1. Upload the `.vhd` from the GitHub Release to an **Azure Storage Account**.
-2. Create a **Managed Image** from the blob.
-3. Launch a VM from that image.
+The published asset is a **fixed-format VHD** (gzip-compressed in the
+GitHub Release). The recommended path — the same one the weekly smoke
+test exercises end-to-end — uses a **direct-upload managed disk** so no
+customer-owned Storage Account is on the data path:
+
+1. Download the `.vhd.gz` from the GitHub Release and `gunzip` it.
+2. Provision an empty managed disk in the target resource group with
+   `az disk create --for-upload --upload-size-bytes <stat -c %s>`,
+   request a short-lived write SAS via `az disk grant-access`, stream
+   the VHD into it with `azcopy copy ... --blob-type PageBlob`, then
+   seal the disk with `az disk revoke-access`.
+3. Create a **Managed Image** from the sealed disk with
+   `az image create --source <disk-id>`.
+4. Launch a VM from that image.
+
+This avoids tenant policies that forbid `publicNetworkAccess=Enabled`
+on Storage Accounts — there is no Storage Account involved.
+
+If you prefer (or your tooling requires) the classic flow, you can
+still upload the `.vhd` to an **Azure Storage Account** as a fixed-VHD
+**page blob** and point `az image create --source` at the blob URI;
+both paths produce equivalent Managed Images.
 
 The default `core_pulse.nix` disables password authentication; make sure you
 have added your SSH public key before building.
@@ -111,11 +130,11 @@ az image create -g "$RG" -n "$IMG" \
 ```
 
 `$SOURCE` is whatever `az image create --source` accepts for your flow:
-a **managed disk resource ID** (as the smoke-test workflow uses, after
+a **managed disk resource ID** (the recommended path used by the
+smoke-test workflow and the *Deploying to Azure* steps above, after
 direct-upload via `az disk create --for-upload`) or a **VHD page-blob URI**
 (`https://<account>.blob.core.windows.net/<container>/<name>.vhd`) if you
-followed the *Deploying to Azure* steps above and uploaded the VHD to a
-storage account.
+chose the alternative storage-account flow instead.
 
 `az vm create` still has to pick **one** controller per VM via
 `--disk-controller-type`. The smoke test currently pins `SCSI` because that

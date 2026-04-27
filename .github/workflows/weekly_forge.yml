@@ -103,8 +103,32 @@ jobs:
             gunzip nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd.gz
             ```
 
-            Then upload `nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd`
-            to your Azure Storage Account and create a Managed Image from it.
+            Then stage `nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd`
+            as a **direct-upload managed disk** and create a Managed Image
+            from it — no customer-owned Storage Account is required:
+
+            ```sh
+            VHD=nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd
+            SIZE=$(stat -c %s "$VHD")
+            DISK_ID=$(az disk create -g <rg> -n nixos-src \
+              --location <region> \
+              --for-upload --upload-size-bytes "$SIZE" \
+              --hyper-v-generation V2 --os-type Linux \
+              --query id -o tsv)
+            SAS=$(az disk grant-access -g <rg> -n nixos-src \
+              --access-level Write --duration-in-seconds 3600 \
+              --query accessSAS -o tsv)
+            azcopy copy "$VHD" "$SAS" --blob-type PageBlob
+            az disk revoke-access -g <rg> -n nixos-src
+            az image create -g <rg> -n nixos-img \
+              --os-type Linux --hyper-v-generation V2 \
+              --supported-disk-controller-types SCSI,NVMe \
+              --source "$DISK_ID"
+            ```
+
+            (Uploading the `.vhd` to a Storage Account as a fixed-VHD page
+            blob and pointing `az image create --source` at the blob URI
+            still works if your environment requires it.)
           files: nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
