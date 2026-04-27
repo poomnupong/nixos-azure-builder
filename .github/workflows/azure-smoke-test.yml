@@ -380,24 +380,15 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          # SCSI+NVMe drivers are in the initrd via core_pulse.nix, but
-          # Azure also requires the *disk* to declare
-          # supportedCapabilities.diskControllerTypes for v7 (NVMe-only)
-          # boots — and the CLI exposes no flag to set that on a managed
-          # disk or image. We therefore stay on a v6 SKU + SCSI, which is
-          # the path validated end-to-end. v7 NVMe-only SKUs are not
-          # supported by the published image today.
-          #
-          # Use the Intel constrained-cores variant Standard_E8-2s_v6:
-          # the AMD twin Standard_E8-2as_v6 requires the
-          # Microsoft.Compute/DaEaV6ConstrainedSeries subscription
-          # feature flag, which is not registered on this subscription
-          # (run 25020523212 InvalidParameter). Standard_E8-2s_v6 is in
-          # the subscription's available v6 list and Esv6 supports
-          # both SCSI and NVMe disk controllers.
+          # The managed image is SCSI-based, so the VM SKU must support
+          # SCSI disk controllers.  Azure v6 SKUs (Dsv6/Esv6) are
+          # NVMe-only and reject --disk-controller-type SCSI (run
+          # 25022815957).  Use a v5 SKU instead: Standard_D2as_v5 is a
+          # small (2 vCPU / 8 GiB) AMD SKU that supports SCSI, is
+          # available on the smoke subscription, and keeps CI cost low.
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
-            --size Standard_E8-2s_v6 \
+            --size Standard_D2as_v5 \
             --disk-controller-type SCSI \
             --admin-username azureuser \
             --ssh-key-values "$SSH_DIR/id.pub" \
