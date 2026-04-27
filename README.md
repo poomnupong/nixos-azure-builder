@@ -92,7 +92,7 @@ customer-owned Storage Account is on the data path:
 
 1. Download the `.vhd.gz` from the GitHub Release and `gunzip` it.
 2. Provision an empty managed disk in the target resource group with
-   `az disk create --for-upload --upload-size-bytes <stat -c %s>`,
+   `az disk create --upload-type Upload --upload-size-bytes <stat -c %s>`,
    request a short-lived write SAS via `az disk grant-access`, stream
    the VHD into it with `azcopy copy ... --blob-type PageBlob`, then
    seal the disk with `az disk revoke-access`.
@@ -118,25 +118,30 @@ older series (e.g. Dasv5, Easv5) are **SCSI-only**; v6 series
 (e.g. `Standard_E8-2as_v6`, `Standard_D2as_v6`) support **both SCSI and
 NVMe** (defaulting to NVMe but allowing SCSI when the OS image declares
 it); and v7 series (e.g. `Standard_E8-2as_v7`) are **NVMe-only** and
-will refuse to boot a managed image whose source disk does not declare
-NVMe support with `InvalidParameter: storageProfile.diskControllerType`.
+require the source disk to declare NVMe support via
+`supportedCapabilities.diskControllerTypes`.
 
-The image we publish supports **both SCSI and NVMe**:
+The shipped initrd loads both NVMe (`nvme`, `nvme_core`) and Hyper-V
+SCSI (`hv_storvsc`, `hv_vmbus`, `hv_netvsc`) drivers, so stage-1 finds
+the root filesystem regardless of which controller Azure exposes
+(root is mounted by label/UUID, so `/dev/sda` vs `/dev/nvme0n1` is
+irrelevant once the driver is loaded).
 
-* `core_pulse.nix` adds the NVMe (`nvme`, `nvme_core`) and Hyper-V
-  SCSI (`hv_storvsc`, `hv_vmbus`, `hv_netvsc`) drivers to
-  `boot.initrd.availableKernelModules`, so stage-1 finds the root
-  filesystem regardless of which controller Azure exposes.
-* The smoke-test workflow stages the VHD with `az disk create --for-upload --supported-disk-controller-types SCSI NVMe`,
-  and the managed image inherits
-  `supportedCapabilities.diskControllerTypes` from that source disk.
-  (Classic `az image create` does not expose this flag — it is set on
-  the source disk.)
+However, **the Azure CLI currently exposes no flag to set
+`supportedCapabilities.diskControllerTypes` on a managed disk or
+image** — `--supported-disk-controller-types` is rejected by both
+`az disk create`/`update` and `az image create` (verified on
+`azure-cli` 2.85.0). As a result, the published image is usable on
+v5/v6 SKUs only:
 
-`az vm create` still has to pick **one** controller per VM via
-`--disk-controller-type`. The smoke test pins `SCSI` on a v6 SKU today
-because that is the path validated end-to-end; v7 SKUs work with
-`--disk-controller-type NVMe`.
+* v5 SKUs: `az vm create --disk-controller-type SCSI`
+* v6 SKUs: `az vm create --disk-controller-type SCSI` (the path the
+  smoke test validates today). `--disk-controller-type NVMe` may
+  also work on v6 once you set the disk capability through ARM/REST
+  directly, but that is not exercised here.
+* v7 NVMe-only SKUs: **not supported today** — Azure rejects them
+  with `InvalidParameter: storageProfile.diskControllerType` because
+  the source disk doesn't declare NVMe.
 
 ```bash
 az image create -g "$RG" -n "$IMG" \
@@ -145,20 +150,15 @@ az image create -g "$RG" -n "$IMG" \
   --source "$SOURCE"
 ```
 
-`$SOURCE` is whatever `az image create --source` accepts for your flow:
-a **managed disk resource ID** (the recommended path used by the
+`$SOURCE` is whatever `az image create --source` accepts for your
+flow: a **managed disk resource ID** (the recommended path used by the
 smoke-test workflow and the *Deploying to Azure* steps above, after
-direct-upload via `az disk create --for-upload`) or a **VHD page-blob URI**
-(`https://<account>.blob.core.windows.net/<container>/<name>.vhd`) if you
-chose the alternative storage-account flow instead. If you stage the
-disk yourself, pass `--supported-disk-controller-types SCSI NVMe` to
-`az disk create` so that the resulting managed image is bootable on v7
-NVMe-only SKUs as well.
+direct-upload via `az disk create --upload-type Upload`) or a **VHD page-blob
+URI** (`https://<account>.blob.core.windows.net/<container>/<name>.vhd`)
+if you chose the alternative storage-account flow.
 
 When booting your own VM from the published VHD, pass
-`--disk-controller-type SCSI` on v6-class SKUs and
-`--disk-controller-type NVMe` on v7 SKUs; both are supported by the
-shipped initrd.
+`--disk-controller-type SCSI` on v5- or v6-class SKUs.
 
 ---
 
@@ -217,11 +217,14 @@ What it does:
 1. Creates the control RG and `N` run RGs.
 2. Creates a Microsoft Entra ID application + service principal with **federated
    credentials** trusting tokens from GitHub Actions for:
-   * `ref:refs/heads/main` (weekly build + smoke test)
+   * `ref:refs/heads/main` (weekly build + smoke test on production)
+   * `ref:refs/heads/copilot/smoke-dev` (long-lived dev branch used by
+     the Copilot agent to iterate on the smoke test against Azure
+     end-to-end — same RBAC and RG pool as `main`, treat as privileged)
    * `environment:azure-janitor` (daily janitor)
 3. Grants the SP `Contributor` on each run RG and `Reader` on the control RG.
    Contributor on the run RG is sufficient for the smoke test's per-run
-   managed-disk staging (`az disk create --for-upload` + `az disk
+   managed-disk staging (`az disk create --upload-type Upload` + `az disk
    grant-access`); no shared storage account or extra data-plane RBAC
    is needed.
 4. Creates a monthly subscription budget with an email notification (Layer 4

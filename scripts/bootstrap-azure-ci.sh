@@ -115,6 +115,11 @@ ensure_federated_credential() {
   fi
 }
 ensure_federated_credential "gh-main"       "repo:${GITHUB_REPO}:ref:refs/heads/main"
+# Long-lived dev branch used by the Copilot agent to iterate on the
+# smoke test against Azure end-to-end without merging unverified
+# changes to main. Single named ref (NOT a wildcard, NOT pull_request)
+# so blast radius matches main; same RBAC, same RG pool.
+ensure_federated_credential "gh-dev"        "repo:${GITHUB_REPO}:ref:refs/heads/copilot/smoke-dev"
 ensure_federated_credential "gh-janitor"    "repo:${GITHUB_REPO}:environment:azure-janitor"
 
 # ---------------------------------------------------------------------------
@@ -139,7 +144,7 @@ az role assignment create --assignee-object-id "$SP_OBJECT_ID" \
 # 3b. (No staging storage account.)
 #     The smoke-test workflow stages each release VHD as a per-run
 #     direct-upload managed disk in the run RG (`az disk create
-#     --for-upload` + AzCopy + `revoke-access`), so no customer-owned
+#     --upload-type Upload` + AzCopy + `revoke-access`), so no customer-owned
 #     storage account is on the data path. This avoids tenant policies
 #     that forbid `publicNetworkAccess=Enabled` on storage accounts.
 #     The Contributor role granted above on each run RG is sufficient
@@ -188,5 +193,13 @@ Bootstrap complete. Configure these in GitHub repo settings:
 
 Also create an Actions environment named 'azure-janitor' (used by the
 janitor workflow's federated credential subject).
+
+The federated credentials registered above trust three GitHub OIDC
+subjects:
+  * ref:refs/heads/main                  — production smoke test
+  * ref:refs/heads/copilot/smoke-dev     — Copilot agent iteration branch
+  * environment:azure-janitor            — daily janitor workflow
+The 'copilot/smoke-dev' branch is a privileged ref with the same
+Azure access as 'main' — treat its branch protection accordingly.
 ============================================================================
 EOF

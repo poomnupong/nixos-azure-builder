@@ -110,15 +110,10 @@ jobs:
             ```sh
             VHD=nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd
             SIZE=$(stat -c %s "$VHD")
-            # Declare SCSI+NVMe on the *source disk*; the managed image
-            # inherits supportedCapabilities.diskControllerTypes from it.
-            # Classic `az image create` itself does not expose
-            # --supported-disk-controller-types.
             DISK_ID=$(az disk create -g <rg> -n nixos-src \
               --location <region> \
-              --for-upload --upload-size-bytes "$SIZE" \
+              --upload-type Upload --upload-size-bytes "$SIZE" \
               --hyper-v-generation V2 --os-type Linux \
-              --supported-disk-controller-types SCSI NVMe \
               --query id -o tsv)
             SAS=$(az disk grant-access -g <rg> -n nixos-src \
               --access-level Write --duration-in-seconds 3600 \
@@ -130,10 +125,16 @@ jobs:
               --source "$DISK_ID"
             ```
 
-            The resulting image is bootable on both SCSI (v6 and earlier)
-            and NVMe (v6 with `--disk-controller-type NVMe`, v7 NVMe-only)
-            VM SKUs; pick the controller per-VM with
-            `az vm create --disk-controller-type {SCSI|NVMe}`.
+            The shipped initrd loads both Hyper-V SCSI and NVMe drivers,
+            so the OS boots regardless of which controller Azure exposes.
+            The disk controller is selected per-VM via `az vm create
+            --disk-controller-type {SCSI|NVMe}`. Note: Azure CLI does
+            not currently expose a flag to declare
+            `supportedCapabilities.diskControllerTypes` on a managed
+            disk or image, so v7 NVMe-only SKUs (which require that
+            declaration) are not supported by this image today; use a
+            v6 SKU with `--disk-controller-type SCSI` (the path
+            validated by the smoke test).
 
             (Uploading the `.vhd` to a Storage Account as a fixed-VHD page
             blob and pointing `az image create --source` at the blob URI

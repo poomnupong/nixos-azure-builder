@@ -81,7 +81,7 @@ The script:
    GitHub OIDC — no client secrets ever land in the repo.
 3. Grants the SP `Contributor` on each run RG and `Reader` on the
    control RG. Contributor on the run RG is sufficient for the smoke
-   test's per-run managed-disk staging (`az disk create --for-upload`
+   test's per-run managed-disk staging (`az disk create --upload-type Upload`
    + `az disk grant-access`); no shared storage account or extra
    data-plane RBAC is needed.
 4. Creates a monthly subscription budget with an email action group
@@ -107,6 +107,29 @@ The script:
 `azure-janitor`. Its subject is referenced by the SP's federated
 credential, so the janitor workflow can obtain an OIDC token.
 
+## Privileged refs
+
+The bootstrap script registers federated credentials trusting GitHub
+OIDC tokens issued for these subjects only:
+
+| Subject | Used by | Notes |
+|---------|---------|-------|
+| `ref:refs/heads/main` | `azure-smoke-test.yml` (production) | Standard release validation. |
+| `ref:refs/heads/copilot/smoke-dev` | `azure-smoke-test.yml` (agent iteration) | Long-lived dev branch. Lets the Copilot agent dispatch the smoke test against Azure end-to-end without merging unverified changes to `main`. Same RG pool, same RBAC, same blast radius as `main`. |
+| `environment:azure-janitor` | `azure-janitor.yml` | Daily cleanup. |
+
+Treat `copilot/smoke-dev` as a privileged ref (same protection
+posture as `main`): pushes to it can talk to Azure with full
+Contributor access on the run RGs. The smoke-test workflow
+explicitly refuses to run from any other ref, so adding more
+privileged branches requires both a new federated credential **and**
+a workflow change.
+
+The `azure-smoke-test.yml` workflow is the only one that uses the
+`copilot/smoke-dev` federation; `weekly_forge.yml` does not touch
+Azure, and the janitor authenticates via the `azure-janitor`
+environment.
+
 ## What happens when an RG is stuck
 
 1. The smoke-test workflow goes red — you get a notification from
@@ -131,22 +154,20 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    ```sh
    az disk create -g "$RG" -n "$DISK_NAME" \
      --location "$LOCATION" \
-     --for-upload --upload-size-bytes "$(stat -c %s "$VHD")" \
-     --hyper-v-generation V2 --os-type Linux \
-     --supported-disk-controller-types SCSI NVMe
+     --upload-type Upload --upload-size-bytes "$(stat -c %s "$VHD")" \
+     --hyper-v-generation V2 --os-type Linux
    ```
 
-   The `--supported-disk-controller-types SCSI NVMe` flag makes the
-   staged disk — and the managed image created from it, which
-   inherits `supportedCapabilities.diskControllerTypes` from its
-   source — bootable on both SCSI (v6) and NVMe (v6/v7) SKUs.
-   Classic `az image create` does not expose this flag, so it has to
-   be set on the source disk. ARM hands out a short-lived write SAS
-   via `az disk grant-access`; AzCopy streams the VHD into it as a
-   page blob; `az disk revoke-access` seals the disk. No
-   customer-owned storage account is on the data path, so tenant
-   policies that forbid `publicNetworkAccess=Enabled` on storage
-   accounts are satisfied without networking exceptions.
+   ARM hands out a short-lived write SAS via `az disk grant-access`;
+   AzCopy streams the VHD into it as a page blob; `az disk
+   revoke-access` seals the disk. No customer-owned storage account
+   is on the data path, so tenant policies that forbid
+   `publicNetworkAccess=Enabled` on storage accounts are satisfied
+   without networking exceptions. Note: the Azure CLI exposes no flag
+   to declare `supportedCapabilities.diskControllerTypes` on a managed
+   disk or image (verified on `azure-cli` 2.85.0 — a runtime preflight
+   in the workflow guards this), so the smoke test stays pinned to a
+   v6 SKU + SCSI; v7 NVMe-only SKUs are not supported today.
 3. **Create Managed Image.** `az image create --source <disk-id>`
    into the same run RG (`hyper-v-generation V2`, `os-type Linux`).
 4. **Boot VM.** A `Standard_E8-2as_v6` VM is created from the image with an

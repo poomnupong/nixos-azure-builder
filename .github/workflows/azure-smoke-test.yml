@@ -36,6 +36,24 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      - name: Preflight — verify ref is allowed
+        # OIDC federation is only configured for `main` (production smoke)
+        # and `copilot/smoke-dev` (long-lived agent iteration branch).
+        # Refuse other refs early with a clear message instead of failing
+        # opaquely at `azure/login`. Both branches share the same RG pool
+        # and RBAC, so blast radius is identical.
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          set -eu
+          case "$REF" in
+            refs/heads/main|refs/heads/copilot/smoke-dev) ;;
+            *)
+              echo "::error::Azure smoke test only runs from refs/heads/main or refs/heads/copilot/smoke-dev (got: $REF). OIDC federation is not configured for other refs; see scripts/bootstrap-azure-ci.sh."
+              exit 1
+              ;;
+          esac
+
       - name: Preflight — verify Azure CI is bootstrapped
         id: preflight
         env:
@@ -62,6 +80,34 @@ jobs:
       - name: Checkout repository
         if: steps.preflight.outputs.ok == 'true'
         uses: actions/checkout@v4
+
+      - name: Preflight — Azure CLI flag sanity
+        if: steps.preflight.outputs.ok == 'true'
+        # Fail fast if the Azure CLI on the runner is missing flags this
+        # workflow depends on. The smoke test has burned multiple PRs
+        # discovering that flags like `--supported-disk-controller-types`
+        # don't exist on `az disk create` / `az disk update` / `az image
+        # create`; this guard makes such drift loud and immediate.
+        run: |
+          set -euo pipefail
+          az --version | head -n1
+          require_flag() {
+            local flag="$1"
+            shift
+            local cmd=("$@")
+            if ! "${cmd[@]}" --help 2>&1 | grep -Fq -- "$flag"; then
+              echo "::error::Azure CLI '${cmd[*]}' is missing the '$flag' flag (CLI: $(az --version | head -n1)). This workflow depends on it; refuse to proceed."
+              exit 1
+            fi
+            echo "ok: '${cmd[*]} $flag'"
+          }
+          # Flags we depend on:
+          require_flag "--upload-type"          az disk create
+          require_flag "--upload-size-bytes"    az disk create
+          require_flag "--hyper-v-generation"   az disk create
+          require_flag "--access-level"         az disk grant-access
+          require_flag "--hyper-v-generation"   az image create
+          require_flag "--disk-controller-type" az vm create
 
       - name: Azure login (OIDC)
         if: steps.preflight.outputs.ok == 'true'
@@ -199,21 +245,22 @@ jobs:
             # 8 GiB+512 B figure pinned by virtualisation.diskSize in
             # core_pulse.nix.
             size=$(stat -c %s "$VHD")
-            echo "creating managed disk $DISK_NAME (--for-upload, $size bytes)"
-            # Declare both SCSI and NVMe as supported disk controller types
-            # on the staged managed disk. The managed image created in the
-            # next step inherits supportedCapabilities.diskControllerTypes
-            # from its source disk, so setting it here propagates to the
-            # image and lets `az vm create --disk-controller-type
-            # {SCSI|NVMe}` work on both v6 (SCSI/NVMe) and v7 (NVMe-only)
-            # SKUs.
+            echo "creating managed disk $DISK_NAME (upload, $size bytes)"
+            # NOTE: there is no CLI knob to declare
+            # supportedCapabilities.diskControllerTypes on a managed disk
+            # or managed image — `az disk create`, `az disk update`, and
+            # `az image create` all reject `--supported-disk-controller-types`
+            # (verified on azure-cli 2.85.0; see the CLI sanity preflight
+            # step earlier in this workflow). The disk controller is
+            # selected per-VM via `az vm create --disk-controller-type`
+            # below; the smoke test therefore stays pinned to a v6 SKU +
+            # SCSI, which is what the published image is validated for.
             disk_id=$(az disk create -g "$RG" -n "$DISK_NAME" \
               --location "$LOCATION" \
-              --for-upload \
+              --upload-type Upload \
               --upload-size-bytes "$size" \
               --hyper-v-generation V2 \
               --os-type Linux \
-              --supported-disk-controller-types SCSI NVMe \
               --query id -o tsv)
             echo "requesting write SAS"
             sas=$(az disk grant-access -g "$RG" -n "$DISK_NAME" \
@@ -314,14 +361,13 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          # The image declares support for both SCSI and NVMe (drivers are
-          # in the initrd via core_pulse.nix, and the staged disk is
-          # created with --supported-disk-controller-types SCSI NVMe), so
-          # in principle the smoke test can boot on either v6 (SCSI/NVMe)
-          # or v7 (NVMe-only). We keep this run pinned to a v6 SKU with
-          # --disk-controller-type SCSI because that is the path
-          # validated end-to-end; flip to a v7 SKU + NVMe to exercise the
-          # NVMe path once it has its own green run history.
+          # SCSI+NVMe drivers are in the initrd via core_pulse.nix, but
+          # Azure also requires the *disk* to declare
+          # supportedCapabilities.diskControllerTypes for v7 (NVMe-only)
+          # boots — and the CLI exposes no flag to set that on a managed
+          # disk or image. We therefore stay on a v6 SKU + SCSI, which is
+          # the path validated end-to-end. v7 NVMe-only SKUs are not
+          # supported by the published image today.
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
             --size Standard_E8-2as_v6 \
