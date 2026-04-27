@@ -257,7 +257,7 @@ jobs:
           set -euo pipefail
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
-            --size Standard_B2s \
+            --size Standard_E8-2as_v7 \
             --admin-username azureuser \
             --ssh-key-values "$SSH_DIR/id.pub" \
             --public-ip-sku Standard \
