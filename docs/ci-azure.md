@@ -166,11 +166,11 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    without networking exceptions. Note: the Azure CLI exposes no flag
    to declare `supportedCapabilities.diskControllerTypes` on a managed
    disk or image (verified on `azure-cli` 2.85.0 — a runtime preflight
-   in the workflow guards this), so the smoke test stays pinned to a
-   v6 SKU + SCSI; v7 NVMe-only SKUs are not supported today.
+   in the workflow guards this); the disk controller is instead pinned
+   per-VM via `az vm create --disk-controller-type`.
 3. **Create Managed Image.** `az image create --source <disk-id>`
    into the same run RG (`hyper-v-generation V2`, `os-type Linux`).
-4. **Boot VM.** A `Standard_E8-2as_v6` VM is created from the image with an
+4. **Boot VM.** A `Standard_D16ads_v7` VM is created from the image with an
    ephemeral ed25519 SSH key generated on the runner. Inbound SSH is
    restricted by NSG to the runner's egress IP only.
 5. **Assert.** SSH in, run `cat /etc/os-release` and `nixos-version`,

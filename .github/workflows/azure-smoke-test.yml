@@ -253,8 +253,8 @@ jobs:
             # (verified on azure-cli 2.85.0; see the CLI sanity preflight
             # step earlier in this workflow). The disk controller is
             # selected per-VM via `az vm create --disk-controller-type`
-            # below; the smoke test therefore stays pinned to a v6 SKU +
-            # SCSI, which is what the published image is validated for.
+            # below; the smoke VM is pinned to a v7 NVMe SKU
+            # (Standard_D16ads_v7) and `--disk-controller-type NVMe`.
             disk_id=$(az disk create -g "$RG" -n "$DISK_NAME" \
               --location "$LOCATION" \
               --upload-type Upload \
@@ -361,17 +361,15 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          # SCSI+NVMe drivers are in the initrd via core_pulse.nix, but
-          # Azure also requires the *disk* to declare
-          # supportedCapabilities.diskControllerTypes for v7 (NVMe-only)
-          # boots — and the CLI exposes no flag to set that on a managed
-          # disk or image. We therefore stay on a v6 SKU + SCSI, which is
-          # the path validated end-to-end. v7 NVMe-only SKUs are not
-          # supported by the published image today.
+          # SCSI+NVMe drivers are both in the initrd via core_pulse.nix,
+          # so the image can boot under either controller. Standard_D16ads_v7
+          # is what's available in the target subscription; the v7 AMD
+          # series is NVMe-only, so we pin --disk-controller-type NVMe to
+          # match the SKU.
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
-            --size Standard_E8-2as_v6 \
-            --disk-controller-type SCSI \
+            --size Standard_D16ads_v7 \
+            --disk-controller-type NVMe \
             --admin-username azureuser \
             --ssh-key-values "$SSH_DIR/id.pub" \
             --public-ip-sku Standard \
