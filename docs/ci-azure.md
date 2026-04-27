@@ -126,13 +126,18 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    recent tag and the matching `nixos-azimage-<tag>.vhd.gz` asset.
 2. **Stage VHD as a managed disk.** Download + decompress on the
    runner, then provision an empty managed disk with
-   `az disk create --for-upload --upload-size-bytes <stat -c %s>` in
-   the selected run RG. ARM hands out a short-lived write SAS via
-   `az disk grant-access`; AzCopy streams the VHD into it as a page
-   blob; `az disk revoke-access` seals the disk. No customer-owned
-   storage account is on the data path, so tenant policies that
-   forbid `publicNetworkAccess=Enabled` on storage accounts are
-   satisfied without networking exceptions.
+   `az disk create --for-upload --upload-size-bytes <stat -c %s>
+   --supported-disk-controller-types SCSI NVMe` in the selected run
+   RG. The `--supported-disk-controller-types SCSI NVMe` flag makes
+   the staged disk — and the managed image created from it, which
+   inherits `supportedCapabilities.diskControllerTypes` from its
+   source — bootable on both SCSI (v6) and NVMe (v6/v7) SKUs;
+   `az image create` itself does not expose this flag. ARM hands out
+   a short-lived write SAS via `az disk grant-access`; AzCopy streams
+   the VHD into it as a page blob; `az disk revoke-access` seals the
+   disk. No customer-owned storage account is on the data path, so
+   tenant policies that forbid `publicNetworkAccess=Enabled` on
+   storage accounts are satisfied without networking exceptions.
 3. **Create Managed Image.** `az image create --source <disk-id>`
    into the same run RG (`hyper-v-generation V2`, `os-type Linux`).
 4. **Boot VM.** A `Standard_E8-2as_v6` VM is created from the image with an

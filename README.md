@@ -118,16 +118,25 @@ older series (e.g. Dasv5, Easv5) are **SCSI-only**; v6 series
 (e.g. `Standard_E8-2as_v6`, `Standard_D2as_v6`) support **both SCSI and
 NVMe** (defaulting to NVMe but allowing SCSI when the OS image declares
 it); and v7 series (e.g. `Standard_E8-2as_v7`) are **NVMe-only** and
-will refuse to boot a SCSI-only managed image with
-`InvalidParameter: storageProfile.diskControllerType`.
+will refuse to boot a managed image whose source disk does not declare
+NVMe support with `InvalidParameter: storageProfile.diskControllerType`.
 
-`az image create` does **not** expose a
-`--supported-disk-controller-types` flag, so the published managed image
-inherits its supported controllers from the source disk (currently SCSI
-only). `az vm create` then has to pick **one** controller per VM via
-`--disk-controller-type`. The smoke test pins `SCSI` on a v6 SKU
-because that is the path validated end-to-end against the NixOS initrd
-we ship.
+The image we publish supports **both SCSI and NVMe**:
+
+* `core_pulse.nix` adds the NVMe (`nvme`, `nvme_core`) and Hyper-V
+  SCSI (`hv_storvsc`, `hv_vmbus`, `hv_netvsc`) drivers to
+  `boot.initrd.availableKernelModules`, so stage-1 finds the root
+  filesystem regardless of which controller Azure exposes.
+* The smoke-test workflow stages the VHD with
+  `az disk create --for-upload --supported-disk-controller-types SCSI
+  NVMe`, and the managed image inherits
+  `supportedCapabilities.diskControllerTypes` from that source disk.
+  (`az image create` itself does not expose this flag.)
+
+`az vm create` still has to pick **one** controller per VM via
+`--disk-controller-type`. The smoke test pins `SCSI` on a v6 SKU today
+because that is the path validated end-to-end; v7 SKUs work with
+`--disk-controller-type NVMe`.
 
 ```bash
 az image create -g "$RG" -n "$IMG" \
@@ -141,14 +150,16 @@ a **managed disk resource ID** (the recommended path used by the
 smoke-test workflow and the *Deploying to Azure* steps above, after
 direct-upload via `az disk create --for-upload`) or a **VHD page-blob URI**
 (`https://<account>.blob.core.windows.net/<container>/<name>.vhd`) if you
-chose the alternative storage-account flow instead.
+chose the alternative storage-account flow instead. If you stage the
+disk yourself, pass
+`--supported-disk-controller-types SCSI NVMe` to `az disk create` so
+that the resulting managed image is bootable on v7 NVMe-only SKUs as
+well.
 
-If you build your own VM from the published VHD on a v6-class SKU and
-hit `InvalidParameter: vmSize ... disk controller types`, pass
-`--disk-controller-type SCSI` to `az vm create` to match the
-SCSI-validated image. On v7 SKUs (NVMe-only) you must instead use a
-NixOS image with NVMe support in the initrd; the SCSI-only image we
-ship today will not boot there.
+When booting your own VM from the published VHD, pass
+`--disk-controller-type SCSI` on v6-class SKUs and
+`--disk-controller-type NVMe` on v7 SKUs; both are supported by the
+shipped initrd.
 
 ---
 
