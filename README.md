@@ -92,6 +92,35 @@ ls result/
 The default `core_pulse.nix` disables password authentication; make sure you
 have added your SSH public key before building.
 
+### Disk controller compatibility (SCSI vs NVMe)
+
+Azure VM families differ in which remote-disk controller they boot with:
+older series (e.g. Dasv5, Easv5) are **SCSI-only**, while newer v6/v7 series
+(e.g. `Standard_E8-2as_v7`) default to **NVMe** and only fall back to SCSI
+if the OS image declares it.
+
+To keep the published image portable across SKUs, the smoke-test workflow
+creates the managed image with **both controllers** declared:
+
+```bash
+az image create -g "$RG" -n "$IMG" \
+  --os-type Linux \
+  --hyper-v-generation V2 \
+  --supported-disk-controller-types SCSI,NVMe \
+  --source "$DISK_ID"
+```
+
+`az vm create` still has to pick **one** controller per VM via
+`--disk-controller-type`. The smoke test currently pins `SCSI` because that
+is the path validated end-to-end against the NixOS initrd we ship; the
+declaration above means a future SKU swap to an NVMe-default family only
+requires flipping that single flag, not rebuilding the image.
+
+If you build your own VM from the published VHD on a v6/v7-class SKU and
+hit `InvalidParameter: vmSize ... disk controller types`, mirror the same
+two flags (`--supported-disk-controller-types SCSI,NVMe` on the image,
+`--disk-controller-type SCSI` on the VM).
+
 ---
 
 ## Azure CI setup (one-time bootstrap)
