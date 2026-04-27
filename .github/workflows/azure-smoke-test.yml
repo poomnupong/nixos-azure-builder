@@ -20,6 +20,20 @@ on:
     # Saturday 18:00 UTC (≈ Sat night US Central)
     - cron: "0 18 * * 6"
   workflow_dispatch:
+  # Auto-dispatch on pushes to the long-lived agent iteration branch.
+  # This lets the Copilot agent run a fix → smoke-test → read-logs loop
+  # without a human dispatch in between. Path filter keeps unrelated
+  # commits (NixOS modules, docs, weekly_forge changes, etc.) from
+  # consuming Azure quota; OIDC federation only trusts this ref + main
+  # (see docs/ci-azure.md "Privileged refs"), and the preflight step
+  # below enforces the same allow-list at runtime.
+  push:
+    branches:
+      - copilot/smoke-dev
+    paths:
+      - ".github/workflows/azure-smoke-test.yml"
+      - "scripts/azure/**"
+      - "scripts/bootstrap-azure-ci.sh"
 
 permissions:
   id-token: write      # OIDC federation to Azure

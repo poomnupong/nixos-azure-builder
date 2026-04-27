@@ -115,7 +115,7 @@ OIDC tokens issued for these subjects only:
 | Subject | Used by | Notes |
 |---------|---------|-------|
 | `ref:refs/heads/main` | `azure-smoke-test.yml` (production) | Standard release validation. |
-| `ref:refs/heads/copilot/smoke-dev` | `azure-smoke-test.yml` (agent iteration) | Long-lived dev branch. Lets the Copilot agent dispatch the smoke test against Azure end-to-end without merging unverified changes to `main`. Same RG pool, same RBAC, same blast radius as `main`. |
+| `ref:refs/heads/copilot/smoke-dev` | `azure-smoke-test.yml` (agent iteration) | Long-lived dev branch. Lets the Copilot agent dispatch the smoke test against Azure end-to-end without merging unverified changes to `main`. Same RG pool, same RBAC, same blast radius as `main`. Pushes to this branch that touch the smoke-test workflow, `scripts/azure/**`, or `scripts/bootstrap-azure-ci.sh` auto-dispatch the smoke test (no manual `workflow_dispatch` needed). |
 | `environment:azure-janitor` | `azure-janitor.yml` | Daily cleanup. |
 
 Treat `copilot/smoke-dev` as a privileged ref (same protection
