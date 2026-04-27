@@ -387,9 +387,17 @@ jobs:
           # disk or image. We therefore stay on a v6 SKU + SCSI, which is
           # the path validated end-to-end. v7 NVMe-only SKUs are not
           # supported by the published image today.
+          #
+          # Use the Intel constrained-cores variant Standard_E8-2s_v6:
+          # the AMD twin Standard_E8-2as_v6 requires the
+          # Microsoft.Compute/DaEaV6ConstrainedSeries subscription
+          # feature flag, which is not registered on this subscription
+          # (run 25020523212 InvalidParameter). Standard_E8-2s_v6 is in
+          # the subscription's available v6 list and Esv6 supports
+          # both SCSI and NVMe disk controllers.
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
-            --size Standard_E8-2as_v6 \
+            --size Standard_E8-2s_v6 \
             --disk-controller-type SCSI \
             --admin-username azureuser \
             --ssh-key-values "$SSH_DIR/id.pub" \
