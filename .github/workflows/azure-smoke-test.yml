@@ -100,7 +100,29 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          tag=$(gh release list --limit 1 --json tagName -q '.[0].tagName')
+          # Wrap gh API calls in a retry/backoff loop. The GitHub API
+          # occasionally returns transient 401/5xx responses to the
+          # GITHUB_TOKEN that gh uses (observed in run #18: a 401 on
+          # the very first `gh release list` while the same token had
+          # full `contents: read` and worked in the immediately prior
+          # run). Three attempts with 5/15s backoff are enough to ride
+          # out these blips without masking real auth failures.
+          gh_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                local delay=$(( attempt * 10 - 5 ))
+                echo "gh call failed (attempt ${attempt}/3): $* — retrying in ${delay}s" >&2
+                sleep "$delay"
+              fi
+            done
+            echo "::error::gh call failed after 3 attempts: $*" >&2
+            return 1
+          }
+          tag=$(gh_retry gh release list --limit 1 --json tagName -q '.[0].tagName // empty')
           if [ -z "$tag" ]; then
             echo "::error::No GitHub Releases found — has Weekly Forge run yet?"
             exit 1
@@ -110,19 +132,22 @@ jobs:
           # nixos-azure-* -> nixos-azimage-*), and old releases keep their
           # original name; matching *.vhd.gz keeps the smoke test working
           # across such renames as long as exactly one such asset exists.
-          mapfile -t assets < <(gh release view "$tag" --json assets \
-            -q '.assets[] | select(.name | test("\\.vhd\\.gz$")) | .name')
-          if [ "${#assets[@]}" -eq 0 ]; then
+          # Fetch name+url together in a single API call so we don't pay
+          # double for the rate-limit / transient-failure window.
+          assets_json=$(gh_retry gh release view "$tag" --json assets \
+            -q '[.assets[] | select(.name | test("\\.vhd\\.gz$")) | {name, url}]')
+          count=$(echo "$assets_json" | jq 'length')
+          if [ "$count" -eq 0 ]; then
             echo "::error::Release $tag has no *.vhd.gz asset"
             exit 1
           fi
-          if [ "${#assets[@]}" -gt 1 ]; then
-            echo "::error::Release $tag has multiple *.vhd.gz assets: ${assets[*]}"
+          if [ "$count" -gt 1 ]; then
+            names=$(echo "$assets_json" | jq -r '[.[].name] | join(" ")')
+            echo "::error::Release $tag has multiple *.vhd.gz assets: ${names}"
             exit 1
           fi
-          asset="${assets[0]}"
-          url=$(gh release view "$tag" --json assets \
-            -q ".assets[] | select(.name==\"$asset\") | .url")
+          asset=$(echo "$assets_json" | jq -r '.[0].name')
+          url=$(echo "$assets_json" | jq -r '.[0].url')
           vhd="${asset%.gz}"
           echo "tag=$tag"     >> "$GITHUB_OUTPUT"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
