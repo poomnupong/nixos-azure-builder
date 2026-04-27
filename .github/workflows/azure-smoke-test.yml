@@ -306,15 +306,19 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          # The managed image declares both SCSI and NVMe in its
-          # supportedDiskControllerTypes, so it's portable across SKUs.
-          # Easv7 defaults to the NVMe controller, but pin to SCSI here
-          # because the current NixOS image is only SCSI-validated end-to-end.
-          # When a future SKU change requires NVMe (or we validate NVMe in
-          # the image), drop this flag or switch it to NVMe.
+          # The current NixOS image is only SCSI-validated end-to-end, so
+          # we must pick a SKU that can boot with DiskControllerType=SCSI.
+          # Within our allowed pool (D/E-series v6 + v7):
+          #   * v7 SKUs (e.g. Easv7/Dasv7) are NVMe-only and refuse to
+          #     boot a SCSI-only managed image with
+          #     "InvalidParameter: storageProfile.diskControllerType".
+          #   * v6 SKUs (e.g. Easv6/Dasv6) support both SCSI and NVMe; we
+          #     pin SCSI explicitly to match the image.
+          # When NVMe is validated in the image, we can move to a v7 SKU
+          # and either drop this flag or switch it to NVMe.
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
-            --size Standard_E8-2as_v7 \
+            --size Standard_E8-2as_v6 \
             --disk-controller-type SCSI \
             --admin-username azureuser \
             --ssh-key-values "$SSH_DIR/id.pub" \

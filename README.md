@@ -114,18 +114,25 @@ have added your SSH public key before building.
 ### Disk controller compatibility (SCSI vs NVMe)
 
 Azure VM families differ in which remote-disk controller they boot with:
-older series (e.g. Dasv5, Easv5) are **SCSI-only**, while newer v6/v7 series
-(e.g. `Standard_E8-2as_v7`) default to **NVMe** and only fall back to SCSI
-if the OS image declares it.
+older series (e.g. Dasv5, Easv5) are **SCSI-only**; v6 series
+(e.g. `Standard_E8-2as_v6`, `Standard_D2as_v6`) support **both SCSI and
+NVMe** (defaulting to NVMe but allowing SCSI when the OS image declares
+it); and v7 series (e.g. `Standard_E8-2as_v7`) are **NVMe-only** and
+will refuse to boot a SCSI-only managed image with
+`InvalidParameter: storageProfile.diskControllerType`.
 
-To keep the published image portable across SKUs, the smoke-test workflow
-creates the managed image with **both controllers** declared:
+`az image create` does **not** expose a
+`--supported-disk-controller-types` flag, so the published managed image
+inherits its supported controllers from the source disk (currently SCSI
+only). `az vm create` then has to pick **one** controller per VM via
+`--disk-controller-type`. The smoke test pins `SCSI` on a v6 SKU
+because that is the path validated end-to-end against the NixOS initrd
+we ship.
 
 ```bash
 az image create -g "$RG" -n "$IMG" \
   --os-type Linux \
   --hyper-v-generation V2 \
-  --supported-disk-controller-types SCSI,NVMe \
   --source "$SOURCE"
 ```
 
@@ -136,16 +143,12 @@ direct-upload via `az disk create --for-upload`) or a **VHD page-blob URI**
 (`https://<account>.blob.core.windows.net/<container>/<name>.vhd`) if you
 chose the alternative storage-account flow instead.
 
-`az vm create` still has to pick **one** controller per VM via
-`--disk-controller-type`. The smoke test currently pins `SCSI` because that
-is the path validated end-to-end against the NixOS initrd we ship; the
-declaration above means a future SKU swap to an NVMe-default family only
-requires flipping that single flag, not rebuilding the image.
-
-If you build your own VM from the published VHD on a v6/v7-class SKU and
-hit `InvalidParameter: vmSize ... disk controller types`, mirror the same
-two flags (`--supported-disk-controller-types SCSI,NVMe` on the image,
-`--disk-controller-type SCSI` on the VM).
+If you build your own VM from the published VHD on a v6-class SKU and
+hit `InvalidParameter: vmSize ... disk controller types`, pass
+`--disk-controller-type SCSI` to `az vm create` to match the
+SCSI-validated image. On v7 SKUs (NVMe-only) you must instead use a
+NixOS image with NVMe support in the initrd; the SCSI-only image we
+ship today will not boot there.
 
 ---
 

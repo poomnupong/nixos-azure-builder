@@ -135,7 +135,7 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    satisfied without networking exceptions.
 3. **Create Managed Image.** `az image create --source <disk-id>`
    into the same run RG (`hyper-v-generation V2`, `os-type Linux`).
-4. **Boot VM.** A `Standard_E8-2as_v7` VM is created from the image with an
+4. **Boot VM.** A `Standard_E8-2as_v6` VM is created from the image with an
    ephemeral ed25519 SSH key generated on the runner. Inbound SSH is
    restricted by NSG to the runner's egress IP only.
 5. **Assert.** SSH in, run `cat /etc/os-release` and `nixos-version`,
