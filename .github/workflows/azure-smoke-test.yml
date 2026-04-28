@@ -432,15 +432,32 @@ jobs:
           # support. Standard_B16as_v2 is a burstable B-series SKU
           # (SCSI-only). The NixOS initrd carries both NVMe and SCSI
           # drivers via core_pulse.nix.
-          az vm create -g "$RG" -n smoke-vm \
-            --image "$IMG" \
-            --size Standard_B16as_v2 \
-            --disk-controller-type SCSI \
-            --admin-username azureuser \
-            --ssh-key-values "$SSH_DIR/id.pub" \
-            --public-ip-sku Standard \
-            --nsg smoke-nsg \
-            --output none
+          #
+          # Retry loop: az sig image-version provisioningState=Succeeded
+          # does NOT guarantee the image is immediately visible to the
+          # deployment service. Retrying handles this propagation delay.
+          for attempt in 1 2 3; do
+            echo "az vm create attempt $attempt"
+            if az vm create -g "$RG" -n smoke-vm \
+              --image "$IMG" \
+              --size Standard_B16as_v2 \
+              --disk-controller-type SCSI \
+              --admin-username azureuser \
+              --ssh-key-values "$SSH_DIR/id.pub" \
+              --public-ip-sku Standard \
+              --nsg smoke-nsg \
+              --output none; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::az vm create failed after 3 attempts"
+              exit 1
+            fi
+            echo "retrying in 60s…"
+            # Clean up the failed VM resource before retrying.
+            az vm delete -g "$RG" -n smoke-vm --yes --no-wait 2>/dev/null || true
+            sleep 60
+          done
           ip=$(az vm show -d -g "$RG" -n smoke-vm --query publicIps -o tsv)
           if [ -z "$ip" ]; then
             echo "::error::VM has no public IP"
