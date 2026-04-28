@@ -258,9 +258,9 @@ jobs:
             # (verified on azure-cli 2.85.0; see the CLI sanity preflight
             # step earlier in this workflow). The disk controller is
             # selected per-VM via `az vm create --disk-controller-type`
-            # below; the smoke VM uses Standard_D16ads_v7 (NVMe-only)
-            # with `--disk-controller-type NVMe`, booting from a gallery
-            # image that declares NVMe + SCSI support.
+            # below; the smoke VM uses Standard_B16as_v2 (SCSI-only)
+            # with `--disk-controller-type SCSI`, booting from a gallery
+            # image that declares SCSI support.
             disk_id=$(az disk create -g "$RG" -n "$DISK_NAME" \
               --location "$LOCATION" \
               --upload-type Upload \
@@ -296,21 +296,19 @@ jobs:
             # The Azure CLI has no flag to set supportedCapabilities.diskControllerTypes
             # on a managed disk (verified on azure-cli 2.85.0). Use the ARM REST API
             # directly so the disk matches the gallery image definition's
-            # DiskControllerTypes=NVMe,SCSI feature declaration.
+            # DiskControllerTypes=SCSI feature declaration.
             echo "stamping diskControllerTypes on managed disk"
             az rest --method PATCH \
               --url "${disk_id}?api-version=2024-03-02" \
-              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
+              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI"}}}'
             rm -f "$VHD"
           fi
           echo "disk_id=$disk_id" >> "$GITHUB_OUTPUT"
 
       - name: Create gallery image from staged disk
-        # Azure managed images (`az image create`) do not support NVMe
-        # disk controller types, so v7 NVMe-only SKUs cannot boot them.
-        # Azure Compute Gallery image definitions *do* support declaring
-        # diskControllerTypes, so we use a per-run gallery + image
-        # definition + image version instead.
+        # Azure Compute Gallery image definitions support declaring
+        # diskControllerTypes via --features, so we use a per-run
+        # gallery + image definition + image version.
         if: steps.preflight.outputs.ok == 'true'
         id: image
         env:
@@ -333,7 +331,7 @@ jobs:
               --location "$LOCATION" >/dev/null
           fi
 
-          # 2. Create image definition with NVMe + SCSI support.
+          # 2. Create image definition with SCSI support.
           if ! az sig image-definition show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" >/dev/null 2>&1; then
             echo "creating image definition $IMG_DEF"
             az sig image-definition create -g "$RG" -r "$GALLERY" -i "$IMG_DEF" \
@@ -342,7 +340,7 @@ jobs:
               --hyper-v-generation V2 \
               --location "$LOCATION" \
               --publisher NixOS-CI --offer NixOS --sku smoke \
-              --features "DiskControllerTypes=NVMe,SCSI" >/dev/null
+              --features "DiskControllerTypes=SCSI" >/dev/null
           fi
 
           # 3. Create image version from the uploaded managed disk.
@@ -408,14 +406,14 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          # The gallery image definition declares both NVMe and SCSI disk
-          # controller support. Standard_D16ads_v7 is NVMe-only, so we
-          # pin --disk-controller-type NVMe. The NixOS initrd carries both
-          # NVMe and SCSI drivers via core_pulse.nix.
+          # The gallery image definition declares SCSI disk controller
+          # support. Standard_B16as_v2 is a burstable B-series SKU
+          # (SCSI-only). The NixOS initrd carries both NVMe and SCSI
+          # drivers via core_pulse.nix.
           az vm create -g "$RG" -n smoke-vm \
             --image "$IMG" \
-            --size Standard_D16ads_v7 \
-            --disk-controller-type NVMe \
+            --size Standard_B16as_v2 \
+            --disk-controller-type SCSI \
             --admin-username azureuser \
             --ssh-key-values "$SSH_DIR/id.pub" \
             --public-ip-sku Standard \
