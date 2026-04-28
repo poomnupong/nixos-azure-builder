@@ -110,7 +110,7 @@ jobs:
           require_flag "--upload-size-bytes"    az disk create
           require_flag "--hyper-v-generation"   az disk create
           require_flag "--access-level"         az disk grant-access
-          require_flag "--disk-controller-type" az sig image-definition create
+          require_flag "--disk-controller-types" az sig image-definition create
           require_flag "--os-disk-source"       az sig image-version create
           require_flag "--disk-controller-type" az vm create
 
@@ -334,7 +334,7 @@ jobs:
               --hyper-v-generation V2 \
               --location "$LOCATION" \
               --publisher NixOS-CI --offer NixOS --sku smoke \
-              --disk-controller-type NVMe SCSI >/dev/null
+              --disk-controller-types NVMe SCSI >/dev/null
           fi
 
           # 3. Create image version from the uploaded managed disk.
