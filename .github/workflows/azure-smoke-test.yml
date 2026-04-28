@@ -345,12 +345,14 @@ jobs:
 
           # 3. Create image version from the uploaded managed disk.
           #    --os-snapshot accepts both snapshot and managed-disk resource IDs.
+          created_new_version=false
           if ! az sig image-version show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" >/dev/null 2>&1; then
             echo "creating image version $IMG_VER"
             az sig image-version create -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" \
               --location "$LOCATION" \
               --os-snapshot "$SOURCE_ID" \
               --replica-count 1 >/dev/null
+            created_new_version=true
           fi
 
           # 4. Wait for image version replication to complete.
@@ -377,9 +379,14 @@ jobs:
 
           # provisioningState=Succeeded does not guarantee the image is
           # immediately visible to the ARM deployment service. Give Azure
-          # a grace period before attempting az vm create.
-          echo "image version replicated; waiting 60s for propagation..."
-          sleep 60
+          # a grace period before attempting az vm create — but only when
+          # we just created a new image version in this run.
+          if [ "$created_new_version" = "true" ]; then
+            echo "image version replicated; waiting 60s for propagation..."
+            sleep 60
+          else
+            echo "image version already existed; skipping propagation delay"
+          fi
 
           # Build the fully-qualified image ID for az vm create.
           image_id=$(az sig image-version show \
