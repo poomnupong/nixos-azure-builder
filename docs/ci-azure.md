@@ -163,16 +163,27 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    revoke-access` seals the disk. No customer-owned storage account
    is on the data path, so tenant policies that forbid
    `publicNetworkAccess=Enabled` on storage accounts are satisfied
-   without networking exceptions. Note: the Azure CLI exposes no flag
-   to declare `supportedCapabilities.diskControllerTypes` on a managed
-   disk or image (verified on `azure-cli` 2.85.0 — a runtime preflight
-   in the workflow guards this); the disk controller is instead pinned
-   per-VM via `az vm create --disk-controller-type`.
-3. **Create Managed Image.** `az image create --source <disk-id>`
-   into the same run RG (`hyper-v-generation V2`, `os-type Linux`).
-4. **Boot VM.** A `Standard_D16ads_v7` VM is created from the image with an
-   ephemeral ed25519 SSH key generated on the runner. Inbound SSH is
-   restricted by NSG to the runner's egress IP only.
+   without networking exceptions. After sealing, an `az rest` PATCH
+   stamps `supportedCapabilities.diskControllerTypes: "SCSI, NVMe"`
+   on the disk via the ARM REST API (the Azure CLI has no flag for
+   this — verified on `azure-cli` 2.85.0):
+
+   ```sh
+   az rest --method PATCH \
+     --url "${disk_id}?api-version=2024-03-02" \
+     --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
+   ```
+
+3. **Create Compute Gallery image.** A per-run Azure Compute Gallery,
+   image definition (with `DiskControllerTypes=NVMe,SCSI` declared),
+   and image version are created from the staged managed disk. Compute
+   Gallery is used instead of `az image create` because Azure managed
+   images do not support declaring `diskControllerTypes`, which is
+   required for v7 NVMe-only SKUs.
+4. **Boot VM.** A `Standard_D16ads_v7` VM is created from the gallery
+   image with `--disk-controller-type NVMe` and an ephemeral ed25519
+   SSH key generated on the runner. Inbound SSH is restricted by NSG
+   to the runner's egress IP only.
 5. **Assert.** SSH in, run `cat /etc/os-release` and `nixos-version`,
    and require `ID=nixos` plus a non-empty version string.
 6. **Teardown.** Existing complete-mode empty-template deployment

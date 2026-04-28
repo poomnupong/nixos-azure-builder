@@ -104,8 +104,8 @@ jobs:
             ```
 
             Then stage `nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd`
-            as a **direct-upload managed disk** and create a Managed Image
-            from it — no customer-owned Storage Account is required:
+            as a **direct-upload managed disk** — no customer-owned Storage
+            Account is required:
 
             ```sh
             VHD=nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd
@@ -120,6 +120,11 @@ jobs:
               --query accessSAS -o tsv)
             azcopy copy "$VHD" "$SAS" --blob-type PageBlob
             az disk revoke-access -g <rg> -n nixos-src
+            # Stamp NVMe+SCSI support (Azure CLI has no flag for this —
+            # must go through the ARM REST API directly):
+            az rest --method PATCH \
+              --url "${DISK_ID}?api-version=2024-03-02" \
+              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
             az image create -g <rg> -n nixos-img \
               --os-type Linux --hyper-v-generation V2 \
               --source "$DISK_ID"
@@ -128,13 +133,9 @@ jobs:
             The shipped initrd loads both Hyper-V SCSI and NVMe drivers,
             so the OS boots regardless of which controller Azure exposes.
             The disk controller is selected per-VM via `az vm create
-            --disk-controller-type {SCSI|NVMe}`. Note: Azure CLI does
-            not currently expose a flag to declare
-            `supportedCapabilities.diskControllerTypes` on a managed
-            disk or image, so v7 NVMe-only SKUs (which require that
-            declaration) are not supported by this image today; use a
-            v6 SKU with `--disk-controller-type SCSI` (the path
-            validated by the smoke test).
+            --disk-controller-type {SCSI|NVMe}`. All VM families including
+            v7 NVMe-only SKUs are supported after the `az rest` PATCH above
+            stamps `supportedCapabilities.diskControllerTypes` on the disk.
 
             (Uploading the `.vhd` to a Storage Account as a fixed-VHD page
             blob and pointing `az image create --source` at the blob URI

@@ -96,9 +96,18 @@ customer-owned Storage Account is on the data path:
    request a short-lived write SAS via `az disk grant-access`, stream
    the VHD into it with `azcopy copy ... --blob-type PageBlob`, then
    seal the disk with `az disk revoke-access`.
-3. Create a **Managed Image** from the sealed disk with
+3. Stamp `diskControllerTypes` on the sealed disk via the ARM REST API
+   (the Azure CLI has no flag for this — verified on `azure-cli` 2.85.0):
+
+   ```bash
+   az rest --method PATCH \
+     --url "${DISK_ID}?api-version=2024-03-02" \
+     --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
+   ```
+
+4. Create a **Managed Image** from the sealed disk with
    `az image create --source <disk-id>`.
-4. Launch a VM from that image.
+5. Launch a VM from that image.
 
 This avoids tenant policies that forbid `publicNetworkAccess=Enabled`
 on Storage Accounts — there is no Storage Account involved.
@@ -117,31 +126,25 @@ Azure VM families differ in which remote-disk controller they boot with:
 older series (e.g. Dasv5, Easv5) are **SCSI-only**; v6 series
 (e.g. `Standard_E8-2as_v6`, `Standard_D2as_v6`) support **both SCSI and
 NVMe** (defaulting to NVMe but allowing SCSI when the OS image declares
-it); and v7 series (e.g. `Standard_E8-2as_v7`) are **NVMe-only** and
+it); and v7 series (e.g. `Standard_D16ads_v7`) are **NVMe-only** and
 require the source disk to declare NVMe support via
 `supportedCapabilities.diskControllerTypes`.
 
 The shipped initrd loads both NVMe (`nvme`, `nvme_core`) and Hyper-V
 SCSI (`hv_storvsc`, `hv_vmbus`, `hv_netvsc`) drivers, so stage-1 finds
-the root filesystem regardless of which controller Azure exposes
-(root is mounted by label/UUID, so `/dev/sda` vs `/dev/nvme0n1` is
-irrelevant once the driver is loaded).
+the root filesystem regardless of which controller Azure exposes.
 
-However, **the Azure CLI currently exposes no flag to set
-`supportedCapabilities.diskControllerTypes` on a managed disk or
-image** — `--supported-disk-controller-types` is rejected by both
-`az disk create`/`update` and `az image create` (verified on
-`azure-cli` 2.85.0). As a result, the published image is usable on
-v5/v6 SKUs only:
+To use v7 NVMe-only SKUs, stamp `diskControllerTypes` on the managed
+disk via the ARM REST API after `az disk revoke-access` (the Azure CLI
+has no flag for this — verified on `azure-cli` 2.85.0):
 
-* v5 SKUs: `az vm create --disk-controller-type SCSI`
-* v6 SKUs: `az vm create --disk-controller-type SCSI` (the path the
-  smoke test validates today). `--disk-controller-type NVMe` may
-  also work on v6 once you set the disk capability through ARM/REST
-  directly, but that is not exercised here.
-* v7 NVMe-only SKUs: **not supported today** — Azure rejects them
-  with `InvalidParameter: storageProfile.diskControllerType` because
-  the source disk doesn't declare NVMe.
+```bash
+az rest --method PATCH \
+  --url "${DISK_ID}?api-version=2024-03-02" \
+  --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
+```
+
+Then create the image and VM as usual:
 
 ```bash
 az image create -g "$RG" -n "$IMG" \
@@ -150,15 +153,18 @@ az image create -g "$RG" -n "$IMG" \
   --source "$SOURCE"
 ```
 
+* v5 SKUs: `az vm create --disk-controller-type SCSI`
+* v6 SKUs: `az vm create --disk-controller-type SCSI` or `--disk-controller-type NVMe`
+  (after the PATCH above)
+* v7 NVMe-only SKUs: `az vm create --disk-controller-type NVMe`
+  (after the PATCH above; validated by the smoke test)
+
 `$SOURCE` is whatever `az image create --source` accepts for your
 flow: a **managed disk resource ID** (the recommended path used by the
 smoke-test workflow and the *Deploying to Azure* steps above, after
 direct-upload via `az disk create --upload-type Upload`) or a **VHD page-blob
 URI** (`https://<account>.blob.core.windows.net/<container>/<name>.vhd`)
 if you chose the alternative storage-account flow.
-
-When booting your own VM from the published VHD, pass
-`--disk-controller-type SCSI` on v5- or v6-class SKUs.
 
 ---
 
