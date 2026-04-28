@@ -453,7 +453,7 @@ jobs:
               echo "::error::az vm create failed after 3 attempts"
               exit 1
             fi
-            echo "retrying in 60s…"
+            echo "retrying in 60s..."
             # Clean up the failed VM resource before retrying.
             az vm delete -g "$RG" -n smoke-vm --yes --no-wait 2>/dev/null || true
             sleep 60
