@@ -138,13 +138,7 @@ jobs:
           idx=$(( 10#$week % ${#pool[@]} ))
           rg="${pool[$idx]}"
           echo "Selected run RG: $rg (pool size ${#pool[@]}, week $week)"
-          # Derive location from the RG itself so the gallery, disk, and
-          # VM are always co-located.  This avoids silent mismatches when
-          # vars.AZURE_LOCATION is changed without recreating the RGs.
-          location=$(az group show -n "$rg" --query location -o tsv)
-          echo "RG location: $location"
           echo "rg=$rg" >> "$GITHUB_OUTPUT"
-          echo "location=$location" >> "$GITHUB_OUTPUT"
 
       # --- actual deploy + smoke test --------------------------------------
       # Pull the latest released VHD, push it through Azure as a Managed
@@ -217,7 +211,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RG:       ${{ steps.pick.outputs.rg }}
-          LOCATION: ${{ steps.pick.outputs.location }}
+          LOCATION: ${{ vars.AZURE_LOCATION }}
           TAG:      ${{ steps.rel.outputs.tag }}
           ASSET:    ${{ steps.rel.outputs.asset }}
           VHD:      ${{ steps.rel.outputs.vhd }}
@@ -321,7 +315,7 @@ jobs:
           RG:       ${{ steps.pick.outputs.rg }}
           TAG:      ${{ steps.rel.outputs.tag }}
           SOURCE_ID: ${{ steps.stage.outputs.disk_id }}
-          LOCATION: ${{ steps.pick.outputs.location }}
+          LOCATION: ${{ vars.AZURE_LOCATION }}
         run: |
           set -euo pipefail
           # Gallery names allow only alphanumerics, underscores, and periods
@@ -444,7 +438,7 @@ jobs:
           RUNNER_IP: ${{ steps.ip.outputs.runner_ip }}
         run: |
           set -euo pipefail
-          az network nsg create -g "$RG" -n smoke-nsg -l "${{ steps.pick.outputs.location }}" >/dev/null
+          az network nsg create -g "$RG" -n smoke-nsg -l "${{ vars.AZURE_LOCATION }}" >/dev/null
           az network nsg rule create -g "$RG" --nsg-name smoke-nsg \
             --name allow-ssh-from-runner --priority 1000 \
             --source-address-prefixes "${RUNNER_IP}/32" \
