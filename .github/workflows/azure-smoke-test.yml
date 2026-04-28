@@ -111,6 +111,7 @@ jobs:
           require_flag "--hyper-v-generation"   az disk create
           require_flag "--access-level"         az disk grant-access
           require_flag "--features"              az sig image-definition create
+          require_flag "--security-type"        az sig image-definition create
           require_flag "--os-snapshot"           az sig image-version create
           require_flag "--disk-controller-type" az vm create
 
@@ -332,12 +333,18 @@ jobs:
           fi
 
           # 2. Create image definition with SCSI support.
+          #    --security-type Standard is required because the source VHD
+          #    does not carry TrustedLaunch artifacts (vTPM, SecureBoot).
+          #    Azure CLI ≥ 2.61 defaults to TrustedLaunchSupported, which
+          #    makes ARM reject az vm create with a misleading "image not
+          #    found" when the image version lacks TL capabilities.
           if ! az sig image-definition show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" >/dev/null 2>&1; then
             echo "creating image definition $IMG_DEF"
             az sig image-definition create -g "$RG" -r "$GALLERY" -i "$IMG_DEF" \
               --os-type Linux \
               --os-state Generalized \
               --hyper-v-generation V2 \
+              --security-type Standard \
               --location "$LOCATION" \
               --publisher NixOS-CI --offer NixOS --sku smoke \
               --features "DiskControllerTypes=SCSI" >/dev/null
