@@ -353,6 +353,28 @@ jobs:
               --replica-count 1 >/dev/null
           fi
 
+          # 4. Wait for image version replication to complete.
+          #    az sig image-version create returns before replication finishes;
+          #    az vm create will fail if the image is still replicating.
+          echo "waiting for image version replication…"
+          for i in $(seq 1 30); do
+            state=$(az sig image-version show \
+              -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" \
+              --query provisioningState -o tsv)
+            echo "  attempt $i: provisioningState=$state"
+            if [ "$state" = "Succeeded" ]; then
+              break
+            elif [ "$state" = "Failed" ]; then
+              echo "::error::Image version replication failed"
+              exit 1
+            fi
+            sleep 30
+          done
+          if [ "$state" != "Succeeded" ]; then
+            echo "::error::Image version replication did not complete within 15 minutes"
+            exit 1
+          fi
+
           # Build the fully-qualified image ID for az vm create.
           image_id=$(az sig image-version show \
             -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" \
