@@ -375,6 +375,12 @@ jobs:
             exit 1
           fi
 
+          # provisioningState=Succeeded does not guarantee the image is
+          # immediately visible to the ARM deployment service. Give Azure
+          # a grace period before attempting az vm create.
+          echo "image version replicated; waiting 60s for propagation..."
+          sleep 60
+
           # Build the fully-qualified image ID for az vm create.
           image_id=$(az sig image-version show \
             -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" \
