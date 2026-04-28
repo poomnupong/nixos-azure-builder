@@ -95,7 +95,11 @@ jobs:
             local flag="$1"
             shift
             local cmd=("$@")
-            if ! "${cmd[@]}" --help 2>&1 | grep -Fq -- "$flag"; then
+            # Use `grep -F ... >/dev/null` rather than `grep -Fq`: under
+            # `set -o pipefail`, `-q` closes the pipe on first match and
+            # SIGPIPEs the upstream `az ... --help`, turning success into
+            # a spurious failure (see run 25025315153 / 25020013831).
+            if ! "${cmd[@]}" --help 2>&1 | grep -F -- "$flag" >/dev/null; then
               echo "::error::Azure CLI '${cmd[*]}' is missing the '$flag' flag (CLI: $(az --version | head -n1)). This workflow depends on it; refuse to proceed."
               exit 1
             fi
