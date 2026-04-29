@@ -649,7 +649,7 @@ jobs:
             echo "|-------|-------|"
             echo "| Disk controller | \`${DISK_CONTROLLER}\` |"
             echo "| Release tag | \`${TAG:-?}\` |"
-            echo "| Managed image | \`${IMG:-?}\` |"
+            echo "| Gallery image version | \`${IMG:-?}\` |"
             echo "| Run RG | \`${RG:-?}\` |"
             # Redact last octet of public IP.
             ipred=$(echo "${IP:-}" | sed -E 's/\.[0-9]+$/.x/')
