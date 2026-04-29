@@ -177,7 +177,7 @@ The weekly smoke test exercises the full release pipeline end-to-end:
 3. **Create Compute Gallery image.** A per-run Azure Compute Gallery,
    image definition (with `DiskControllerTypes=SCSI` declared), and
    image version are created from the staged managed disk.
-4. **Boot VM.** A `Standard_B16as_v2` VM is created from the gallery
+4. **Boot VM.** A `Standard_D4ads_v5` VM is created from the gallery
    image with `--disk-controller-type SCSI`, `--admin-username azureuser`,
    and an ephemeral ed25519 SSH key generated on the runner. Inbound SSH
    is restricted by NSG to the runner's egress IP only.
