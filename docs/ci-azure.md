@@ -20,7 +20,9 @@ uses it, and then empties it. See "Why RBAC survives" below.
 
 The smoke test stages each release VHD as a per-run **direct-upload
 managed disk** in the selected run RG (sealed and reaped within the
-same job), so no shared customer-owned storage account is required.
+same workflow run), so no shared customer-owned storage account is
+required. Both SCSI and NVMe matrix legs share the same RG and image;
+only the VMs and NSGs get per-controller-type names to avoid collisions.
 
 Using a small pool (not a single RG) means a slow teardown on one run
 does not block the next run — the smoke-test workflow will pick a
@@ -175,12 +177,17 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    ```
 
 3. **Create Compute Gallery image.** A per-run Azure Compute Gallery,
-   image definition (with `DiskControllerTypes=SCSI` declared), and
-   image version are created from the staged managed disk.
-4. **Boot VM.** A `Standard_D4ads_v5` VM is created from the gallery
-   image with `--disk-controller-type SCSI`, `--admin-username azureuser`,
-   and an ephemeral ed25519 SSH key generated on the runner. Inbound SSH
-   is restricted by NSG to the runner's egress IP only.
+   image definition (with `DiskControllerTypes=SCSI, NVMe` declared),
+   and image version are created from the staged managed disk.
+4. **Boot VM (matrix).** The `smoke` job runs as a matrix
+   (`disk_controller: [SCSI, NVMe]`, `fail-fast: false`) — both legs
+   share the same run RG and gallery image prepared in step 3. Each leg
+   creates a `Standard_D4ads_v5` VM with a unique name
+   (`smoke-vm-scsi` / `smoke-vm-nvme`) and its own NSG
+   (`smoke-nsg-scsi` / `smoke-nsg-nvme`), using
+   `--disk-controller-type` from the matrix. An ephemeral ed25519 SSH
+   key is generated per leg. Inbound SSH is restricted by each leg's
+   NSG to that runner's egress IP only.
 
    The `azureuser` account is **pre-declared in `core_pulse.nix`** so it
    exists in the VHD at boot. The Azure provisioning agent (waagent/cloud-init)
@@ -195,10 +202,11 @@ The weekly smoke test exercises the full release pipeline end-to-end:
 5. **Assert.** SSH in as `azureuser`, run `cat /etc/os-release` and
    `nixos-version`, and require `ID=nixos` plus a non-empty version
    string.
-6. **Teardown.** Existing complete-mode empty-template deployment
-   wipes every resource (VM, disk, NIC, NSG, public IP, VNet,
-   image, *and the per-run staging disk*) but leaves the run RG and
-   its role assignments intact.
+6. **Teardown.** A separate `cleanup` job (runs after both smoke legs
+   finish) performs the existing complete-mode empty-template
+   deployment, which wipes every resource (VMs, disks, NICs, NSGs,
+   public IPs, VNets, gallery image, *and the per-run staging disk*)
+   but leaves the run RG and its role assignments intact.
 
-Cost per run: well under $0.10 — the VM lives <15 minutes and the
-staging managed disk is deleted by teardown in the same job.
+Cost per run: well under $0.10 — the VMs live <15 minutes and the
+staging managed disk is deleted by teardown.

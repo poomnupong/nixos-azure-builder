@@ -2,10 +2,19 @@ name: Azure Smoke Test
 
 # ---------------------------------------------------------------------------
 # End-to-end smoke test for the latest published VHD:
-#   1. pick one of the perpetual run RGs from the pool
-#   2. deploy the latest released VHD as a VM in that RG
-#   3. SSH to the VM and assert the NixOS version string
+#   1. prepare shared resources (disk, gallery, image) in a single run RG
+#   2. deploy VMs in parallel (SCSI + NVMe matrix) from the same image
+#   3. SSH to each VM and assert the NixOS version string
 #   4. tear the RG down to *empty* (not deleted — see docs/ci-azure.md)
+#
+# The workflow uses three jobs:
+#   prepare  — stages the VHD and creates a gallery image (runs once)
+#   smoke    — matrix [SCSI, NVMe]; boots a VM per controller type
+#   cleanup  — complete-mode teardown after both smoke legs finish
+#
+# Both matrix legs share a single run RG. Resource names include the
+# controller type where needed (VM, NSG) to avoid collisions.
+# Standard_D4ads_v5 supports both SCSI and NVMe disk controllers.
 #
 # Teardown is done with a complete-mode deployment of an empty template so
 # that ARM computes the delete DAG itself (disks before NICs before VNets,
@@ -17,7 +26,7 @@ name: Azure Smoke Test
 
 on:
   schedule:
-    # Saturday 18:00 UTC (≈ Sat night US Central)
+    # Saturday 18:00 UTC (~ Sat night US Central)
     - cron: "0 18 * * 6"
   workflow_run:
     workflows: ["Weekly Forge"]
@@ -33,18 +42,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  smoke:
-    name: Deploy latest VHD and smoke-test
+  # =====================================================================
+  # Job 1: prepare --- create shared resources (disk, gallery, image)
+  # =====================================================================
+  prepare:
+    name: Prepare image
     # When triggered by workflow_run (Weekly Forge), only run if the forge succeeded.
     # Schedule and workflow_dispatch triggers always run (workflow_run.conclusion is empty).
     if: >-
       github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
+    outputs:
+      ok:    ${{ steps.preflight.outputs.ok }}
+      rg:    ${{ steps.pick.outputs.rg }}
+      tag:   ${{ steps.rel.outputs.tag }}
+      image: ${{ steps.image.outputs.image }}
 
     steps:
-      - name: Preflight — verify ref is allowed
+      - name: "Preflight \u2014 verify ref is allowed"
         # OIDC federation is only configured for `main` (production smoke)
         # and `copilot/smoke-dev` (long-lived agent iteration branch).
         # Refuse other refs early with a clear message instead of failing
@@ -62,7 +79,7 @@ jobs:
               ;;
           esac
 
-      - name: Preflight — verify Azure CI is bootstrapped
+      - name: "Preflight \u2014 verify Azure CI is bootstrapped"
         id: preflight
         env:
           AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
@@ -79,7 +96,7 @@ jobs:
           [ -n "${AZURE_RUN_RGS:-}" ]         || missing+=("var AZURE_RUN_RGS")
           [ -n "${AZURE_CONTROL_RG:-}" ]      || missing+=("var AZURE_CONTROL_RG")
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::notice::Azure CI is not bootstrapped — skipping. Missing: ${missing[*]}. Run scripts/bootstrap-azure-ci.sh to configure."
+            echo "::notice::Azure CI is not bootstrapped \u2014 skipping. Missing: ${missing[*]}. Run scripts/bootstrap-azure-ci.sh to configure."
             echo "ok=false" >> "$GITHUB_OUTPUT"
           else
             echo "ok=true" >> "$GITHUB_OUTPUT"
@@ -89,7 +106,7 @@ jobs:
         if: steps.preflight.outputs.ok == 'true'
         uses: actions/checkout@v4
 
-      - name: Preflight — Azure CLI flag sanity
+      - name: "Preflight \u2014 Azure CLI flag sanity"
         if: steps.preflight.outputs.ok == 'true'
         # Fail fast if the Azure CLI on the runner is missing flags this
         # workflow depends on. The smoke test has burned multiple PRs
@@ -130,8 +147,8 @@ jobs:
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Pick a run RG from the pool based on the ISO week number so the
-      # same RG isn't hammered every week and we exercise both slots.
+      # Pick a run RG from the pool. Both matrix legs share a single RG;
+      # teardown runs once after both legs finish (in the cleanup job).
       - name: Select run RG from pool
         if: steps.preflight.outputs.ok == 'true'
         id: pick
@@ -140,18 +157,18 @@ jobs:
         run: |
           set -eu
           read -r -a pool <<< "$AZURE_RUN_RGS"
+          # Rotate through the pool by ISO week number so that a slow
+          # teardown on one run doesn't block the next scheduled run.
           week=$(date -u +%V)
-          # `10#` forces base-10 parsing; ISO week numbers like "08"/"09"
-          # would otherwise be treated as invalid octal by bash arithmetic.
           idx=$(( 10#$week % ${#pool[@]} ))
           rg="${pool[$idx]}"
           echo "Selected run RG: $rg (pool size ${#pool[@]}, week $week)"
           echo "rg=$rg" >> "$GITHUB_OUTPUT"
 
-      # --- actual deploy + smoke test --------------------------------------
+      # --- shared resource creation ----------------------------------------
       # Pull the latest released VHD, push it through Azure as a Managed
-      # Image, boot a small B2s VM from it locked down to the runner's IP,
-      # SSH in, and assert NixOS booted. Cost per run: well under $0.10.
+      # Disk + Compute Gallery image. Both SCSI and NVMe legs consume the
+      # same image.
       - name: Resolve latest release
         if: steps.preflight.outputs.ok == 'true'
         id: rel
@@ -174,7 +191,7 @@ jobs:
               fi
               if [ "$attempt" -lt 3 ]; then
                 local delay=$(( attempt * 10 - 5 ))
-                echo "gh call failed (attempt ${attempt}/3): $* — retrying in ${delay}s" >&2
+                echo "gh call failed (attempt ${attempt}/3): $* \u2014 retrying in ${delay}s" >&2
                 sleep "$delay"
               fi
             done
@@ -183,7 +200,7 @@ jobs:
           }
           tag=$(gh_retry gh release list --limit 1 --json tagName -q '.[0].tagName // empty')
           if [ -z "$tag" ]; then
-            echo "::error::No GitHub Releases found — has Weekly Forge run yet?"
+            echo "::error::No GitHub Releases found \u2014 has Weekly Forge run yet?"
             exit 1
           fi
           # Resolve the gzipped VHD asset by pattern rather than by an
@@ -240,11 +257,18 @@ jobs:
           state=$(az disk show -g "$RG" -n "$DISK_NAME" \
             --query diskState -o tsv 2>/dev/null || true)
           if [ "$state" = "Unattached" ] || [ "$state" = "Attached" ]; then
-            echo "disk $DISK_NAME already sealed (state=$state) — reusing"
+            echo "disk $DISK_NAME already sealed (state=$state) \u2014 reusing"
             disk_id=$(az disk show -g "$RG" -n "$DISK_NAME" --query id -o tsv)
+            # Ensure diskControllerTypes is stamped even on reuse \u2014 a prior
+            # run may have created the disk with SCSI-only or died before
+            # the PATCH completed.
+            echo "ensuring diskControllerTypes on reused disk"
+            az rest --method PATCH \
+              --url "${disk_id}?api-version=2024-03-02" \
+              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
           else
             if [ -n "$state" ]; then
-              echo "disk $DISK_NAME exists in state '$state' — recreating"
+              echo "disk $DISK_NAME exists in state '$state' \u2014 recreating"
               az disk delete -g "$RG" -n "$DISK_NAME" --yes >/dev/null
             fi
             echo "downloading $ASSET from latest release"
@@ -261,14 +285,13 @@ jobs:
             echo "creating managed disk $DISK_NAME (upload, $size bytes)"
             # NOTE: there is no CLI knob to declare
             # supportedCapabilities.diskControllerTypes on a managed disk
-            # or managed image — `az disk create`, `az disk update`, and
+            # or managed image \u2014 `az disk create`, `az disk update`, and
             # `az image create` all reject `--supported-disk-controller-types`
             # (verified on azure-cli 2.85.0; see the CLI sanity preflight
-            # step earlier in this workflow). The disk controller is
-            # selected per-VM via `az vm create --disk-controller-type`
-            # below; the smoke VM uses Standard_D4ads_v5 with
-            # `--disk-controller-type SCSI`, booting from a gallery
-            # image that declares SCSI support.
+            # step earlier in this workflow). We stamp "SCSI, NVMe" via
+            # the ARM REST API after sealing the disk, then the gallery
+            # image definition also declares both controller types so the
+            # matrix can test each one independently.
             disk_id=$(az disk create -g "$RG" -n "$DISK_NAME" \
               --location "$LOCATION" \
               --upload-type Upload \
@@ -286,10 +309,9 @@ jobs:
             # azcopy wants to create ~/.azcopy/{plans,logs}; on hosted
             # runners /home/runner/.azcopy can end up owned by root from
             # earlier steps (e.g. azure/login), so point both locations
-            # at writable temp dirs to avoid "permission denied" on
-            # mkdir /home/runner/.azcopy/plans.
-            azcopy_log_location=$(mktemp -d)
+            # at a temp dir we fully own.
             azcopy_job_plan_location=$(mktemp -d)
+            azcopy_log_location=$(mktemp -d)
             cleanup_azcopy_temp_dirs() {
               rm -rf "$azcopy_log_location" "$azcopy_job_plan_location"
             }
@@ -304,11 +326,11 @@ jobs:
             # The Azure CLI has no flag to set supportedCapabilities.diskControllerTypes
             # on a managed disk (verified on azure-cli 2.85.0). Use the ARM REST API
             # directly so the disk matches the gallery image definition's
-            # DiskControllerTypes=SCSI feature declaration.
+            # DiskControllerTypes=SCSI, NVMe feature declaration.
             echo "stamping diskControllerTypes on managed disk"
             az rest --method PATCH \
               --url "${disk_id}?api-version=2024-03-02" \
-              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI"}}}'
+              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
             rm -f "$VHD"
           fi
           echo "disk_id=$disk_id" >> "$GITHUB_OUTPUT"
@@ -339,13 +361,29 @@ jobs:
               --location "$LOCATION" >/dev/null
           fi
 
-          # 2. Create image definition with SCSI support.
+          # 2. Create image definition with SCSI + NVMe support.
           #    The source VHD has no TrustedLaunch artifacts (vTPM, SecureBoot),
-          #    so we omit any SecurityType feature — Azure defaults to Standard
+          #    so we omit any SecurityType feature \u2014 Azure defaults to Standard
           #    when no SecurityType is declared.
           #    Note: --security-type was removed from az sig image-definition
           #    create in Azure CLI 2.85.0; use --features for SecurityType if
           #    a non-Standard type is ever needed.
+          #    If a previous run created the definition with stale features
+          #    (e.g. SCSI-only), delete and recreate it so both matrix legs
+          #    can deploy.
+          if az sig image-definition show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" >/dev/null 2>&1; then
+            existing_features=$(az sig image-definition show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" \
+              --query "features[?name=='DiskControllerTypes'].value | [0]" -o tsv 2>/dev/null || true)
+            if [ "$existing_features" != "SCSI, NVMe" ]; then
+              echo "image definition $IMG_DEF has stale DiskControllerTypes='$existing_features' \u2014 recreating"
+              # Must delete the image version first (ARM won't delete a
+              # definition that still has versions).
+              if az sig image-version show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" >/dev/null 2>&1; then
+                az sig image-version delete -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" >/dev/null
+              fi
+              az sig image-definition delete -g "$RG" -r "$GALLERY" -i "$IMG_DEF" >/dev/null
+            fi
+          fi
           if ! az sig image-definition show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" >/dev/null 2>&1; then
             echo "creating image definition $IMG_DEF"
             az sig image-definition create -g "$RG" -r "$GALLERY" -i "$IMG_DEF" \
@@ -354,7 +392,7 @@ jobs:
               --hyper-v-generation V2 \
               --location "$LOCATION" \
               --publisher NixOS-CI --offer NixOS --sku smoke \
-              --features "DiskControllerTypes=SCSI" >/dev/null
+              --features "DiskControllerTypes=SCSI, NVMe" >/dev/null
           fi
 
           # 3. Create image version from the uploaded managed disk.
@@ -373,10 +411,10 @@ jobs:
           fi
 
           # 4. Wait for image version replication to complete.
-          #    provisioningState=Succeeded is necessary but NOT sufficient —
+          #    provisioningState=Succeeded is necessary but NOT sufficient \u2014
           #    the per-region aggregatedState from --expand ReplicationStatus
           #    must also be "Completed" before az vm create can find the image.
-          echo "waiting for image version replication…"
+          echo "waiting for image version replication\u2026"
           for i in $(seq 1 30); do
             prov_state=$(az sig image-version show \
               -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" \
@@ -401,7 +439,7 @@ jobs:
 
           # Even after aggregatedState=Completed, the ARM deployment service
           # may take additional time to become aware of the new image version.
-          # Give Azure a grace period — but only when we just created one.
+          # Give Azure a grace period \u2014 but only when we just created one.
           if [ "$created_new_version" = "true" ]; then
             echo "image version replicated; waiting 120s for ARM propagation..."
             sleep 120
@@ -415,8 +453,29 @@ jobs:
             --query id -o tsv)
           echo "image=$image_id" >> "$GITHUB_OUTPUT"
 
+  # =====================================================================
+  # Job 2: smoke --- boot a VM per controller type (matrix) and SSH-assert
+  # =====================================================================
+  smoke:
+    name: "Smoke ${{ matrix.disk_controller }}"
+    needs: prepare
+    if: needs.prepare.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        disk_controller: [SCSI, NVMe]
+
+    steps:
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Generate ephemeral SSH keypair
-        if: steps.preflight.outputs.ok == 'true'
         id: ssh
         run: |
           set -euo pipefail
@@ -427,7 +486,6 @@ jobs:
           echo "dir=$d" >> "$GITHUB_OUTPUT"
 
       - name: Determine runner public IP
-        if: steps.preflight.outputs.ok == 'true'
         id: ip
         run: |
           set -euo pipefail
@@ -440,32 +498,39 @@ jobs:
           echo "runner_ip=$ip" >> "$GITHUB_OUTPUT"
 
       - name: Create locked-down NSG
-        if: steps.preflight.outputs.ok == 'true'
         env:
-          RG:        ${{ steps.pick.outputs.rg }}
+          RG:        ${{ needs.prepare.outputs.rg }}
           RUNNER_IP: ${{ steps.ip.outputs.runner_ip }}
+          LOCATION:  ${{ vars.AZURE_LOCATION }}
+          DISK_CONTROLLER: ${{ matrix.disk_controller }}
         run: |
           set -euo pipefail
-          az network nsg create -g "$RG" -n smoke-nsg -l "${{ vars.AZURE_LOCATION }}" >/dev/null
-          az network nsg rule create -g "$RG" --nsg-name smoke-nsg \
+          ctrl_lower=$(echo "$DISK_CONTROLLER" | tr '[:upper:]' '[:lower:]')
+          nsg_name="smoke-nsg-${ctrl_lower}"
+          az network nsg create -g "$RG" -n "$nsg_name" -l "$LOCATION" >/dev/null
+          az network nsg rule create -g "$RG" --nsg-name "$nsg_name" \
             --name allow-ssh-from-runner --priority 1000 \
             --source-address-prefixes "${RUNNER_IP}/32" \
             --destination-port-ranges 22 \
             --access Allow --protocol Tcp --direction Inbound >/dev/null
 
       - name: Create smoke-test VM
-        if: steps.preflight.outputs.ok == 'true'
         id: vm
         env:
-          RG:       ${{ steps.pick.outputs.rg }}
-          IMG:      ${{ steps.image.outputs.image }}
+          RG:       ${{ needs.prepare.outputs.rg }}
+          IMG:      ${{ needs.prepare.outputs.image }}
           SSH_DIR:  ${{ steps.ssh.outputs.dir }}
           LOCATION: ${{ vars.AZURE_LOCATION }}
+          DISK_CONTROLLER: ${{ matrix.disk_controller }}
           AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
+
+          ctrl_lower=$(echo "$DISK_CONTROLLER" | tr '[:upper:]' '[:lower:]')
+          vm_name="smoke-vm-${ctrl_lower}"
+          nsg_name="smoke-nsg-${ctrl_lower}"
 
           # --- OIDC re-login helper -------------------------------------------
           # The GitHub-issued OIDC assertion that azure/login@v2 exchanged for
@@ -496,10 +561,11 @@ jobs:
             az account set -s "$AZURE_SUBSCRIPTION_ID"
           }
 
-          # The gallery image definition declares SCSI disk controller
-          # support. Standard_D4ads_v5 supports both SCSI and NVMe;
-          # we pin SCSI via --disk-controller-type below. The NixOS
-          # initrd carries both NVMe and SCSI drivers via core_pulse.nix.
+          # The gallery image definition declares both SCSI and NVMe disk
+          # controller support. Standard_D4ads_v5 supports both SCSI and
+          # NVMe; the matrix variable selects which one this leg tests.
+          # The NixOS initrd carries both NVMe and SCSI drivers via
+          # core_pulse.nix.
           #
           # Retry loop: even after aggregatedState=Completed + propagation
           # delay, the ARM deployment service may still not see the image.
@@ -510,15 +576,15 @@ jobs:
             # retries never hit an expired assertion (AADSTS700024).
             az_oidc_login
             echo "az vm create attempt $attempt"
-            if az vm create -g "$RG" -n smoke-vm \
+            if az vm create -g "$RG" -n "$vm_name" \
               --location "$LOCATION" \
               --image "$IMG" \
               --size Standard_D4ads_v5 \
-              --disk-controller-type SCSI \
+              --disk-controller-type "$DISK_CONTROLLER" \
               --admin-username azureuser \
               --ssh-key-values "$SSH_DIR/id.pub" \
               --public-ip-sku Standard \
-              --nsg smoke-nsg \
+              --nsg "$nsg_name" \
               --output none; then
               break
             fi
@@ -530,15 +596,15 @@ jobs:
             # Clean up the failed VM resource before retrying and wait for
             # Azure to finish deleting it so the next create does not race
             # with an in-progress delete.
-            if az vm show -g "$RG" -n smoke-vm --output none 2>/dev/null; then
-              az vm delete -g "$RG" -n smoke-vm --yes
-              az vm wait -g "$RG" -n smoke-vm --deleted
+            if az vm show -g "$RG" -n "$vm_name" --output none 2>/dev/null; then
+              az vm delete -g "$RG" -n "$vm_name" --yes
+              az vm wait -g "$RG" -n "$vm_name" --deleted
             else
-              echo "No existing smoke-vm found to clean up before retry"
+              echo "No existing $vm_name found to clean up before retry"
             fi
             sleep 90
           done
-          ip=$(az vm show -d -g "$RG" -n smoke-vm --query publicIps -o tsv)
+          ip=$(az vm show -d -g "$RG" -n "$vm_name" --query publicIps -o tsv)
           if [ -z "$ip" ]; then
             echo "::error::VM has no public IP"
             exit 1
@@ -546,7 +612,6 @@ jobs:
           echo "public_ip=$ip" >> "$GITHUB_OUTPUT"
 
       - name: Wait for SSH on VM
-        if: steps.preflight.outputs.ok == 'true'
         env:
           IP: ${{ steps.vm.outputs.public_ip }}
         run: |
@@ -562,7 +627,6 @@ jobs:
           exit 1
 
       - name: SSH and assert NixOS
-        if: steps.preflight.outputs.ok == 'true'
         id: assert
         env:
           IP:      ${{ steps.vm.outputs.public_ip }}
@@ -621,21 +685,23 @@ jobs:
           echo "nixos_version=$nv" >> "$GITHUB_OUTPUT"
 
       - name: Job summary
-        if: always() && steps.preflight.outputs.ok == 'true'
+        if: always()
         env:
-          TAG:     ${{ steps.rel.outputs.tag }}
-          IMG:     ${{ steps.image.outputs.image }}
+          TAG:     ${{ needs.prepare.outputs.tag }}
+          IMG:     ${{ needs.prepare.outputs.image }}
           IP:      ${{ steps.vm.outputs.public_ip }}
           NV:      ${{ steps.assert.outputs.nixos_version }}
-          RG:      ${{ steps.pick.outputs.rg }}
+          RG:      ${{ needs.prepare.outputs.rg }}
+          DISK_CONTROLLER: ${{ matrix.disk_controller }}
         run: |
           {
-            echo "### Smoke test summary"
+            echo "### Smoke test summary \u2014 ${DISK_CONTROLLER}"
             echo
             echo "| Field | Value |"
             echo "|-------|-------|"
+            echo "| Disk controller | \`${DISK_CONTROLLER}\` |"
             echo "| Release tag | \`${TAG:-?}\` |"
-            echo "| Managed image | \`${IMG:-?}\` |"
+            echo "| Gallery image version | \`${IMG:-?}\` |"
             echo "| Run RG | \`${RG:-?}\` |"
             # Redact last octet of public IP.
             ipred=$(echo "${IP:-}" | sed -E 's/\.[0-9]+$/.x/')
@@ -643,17 +709,37 @@ jobs:
             echo "| nixos-version | \`${NV:-?}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # =====================================================================
+  # Job 3: cleanup --- complete-mode teardown after both smoke legs finish
+  # =====================================================================
+  cleanup:
+    name: Cleanup
+    needs: [prepare, smoke]
+    if: always() && needs.prepare.outputs.ok == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id:       ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       # -----------------------------------------------------------------
-      # Layer 1 — complete-mode teardown with retry + backoff.
+      # Layer 1 \u2014 complete-mode teardown with retry + backoff.
       # The empty template tells ARM "the desired state of this RG is
       # nothing"; ARM deletes every resource in dependency order.
       # Role assignments on the RG itself are untouched because the
       # RG is not deleted.
       # -----------------------------------------------------------------
       - name: Teardown run RG (complete-mode, with retry)
-        if: always() && steps.preflight.outputs.ok == 'true'
         env:
-          RG: ${{ steps.pick.outputs.rg }}
+          RG: ${{ needs.prepare.outputs.rg }}
           AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -703,13 +789,12 @@ jobs:
           fi
 
       # -----------------------------------------------------------------
-      # Layer 2 — verify RG is actually empty. Fails the job loudly if
-      # not, which surfaces as a red workflow → GitHub notifies you.
+      # Layer 2 \u2014 verify RG is actually empty. Fails the job loudly if
+      # not, which surfaces as a red workflow \u2192 GitHub notifies you.
       # -----------------------------------------------------------------
       - name: Verify run RG is empty
-        if: always() && steps.preflight.outputs.ok == 'true'
         env:
-          RG: ${{ steps.pick.outputs.rg }}
+          RG: ${{ needs.prepare.outputs.rg }}
         run: |
           set -eu
           remaining=$(az resource list -g "$RG" --query "length(@)" -o tsv)
