@@ -54,12 +54,21 @@ nixos-azimage-builder/
        tmux python3 awscli2
      ];
 
+     # Your own user — add your SSH key so you can log in directly.
      users.users.alice = {
        isNormalUser = true;
        extraGroups = [ "wheel" ];
        openssh.authorizedKeys.keys = [
          "ssh-ed25519 AAAA... alice@myhost"
        ];
+     };
+
+     # Azure provisioning user — must exist so cloud-init only writes
+     # the SSH key.  Do NOT set openssh.authorizedKeys.keys here;
+     # the key is injected at deployment time by az vm create.
+     users.users.azureuser = {
+       isNormalUser = true;
+       extraGroups = [ "wheel" ];
      };
    }
    ```
@@ -117,8 +126,51 @@ still upload the `.vhd` to an **Azure Storage Account** as a fixed-VHD
 **page blob** and point `az image create --source` at the blob URI;
 both paths produce equivalent Managed Images.
 
-The default `core_pulse.nix` disables password authentication; make sure you
-have added your SSH public key before building.
+### User provisioning (NixOS vs traditional Linux)
+
+On a traditional distribution like Ubuntu, `az vm create --admin-username`
+tells cloud-init to create the admin user imperatively at first boot using
+`useradd`.  On NixOS this is **unreliable** — cloud-init's imperative
+`useradd` can fail silently on NixOS's non-standard filesystem layout
+(e.g. `/etc/passwd` is a symlink into `/etc/static`), leaving the account
+partially created and SSH unusable.
+
+The NixOS-idiomatic fix is to **declare the admin user in `core_pulse.nix`**
+so it exists in `/etc/passwd` and has a proper home directory before the VM
+ever boots:
+
+```nix
+users.users.azureuser = {
+  isNormalUser = true;
+  description  = "Azure admin user";
+  extraGroups  = [ "wheel" ];
+  # Do NOT set openssh.authorizedKeys.keys here.
+};
+```
+
+| What | Where it comes from | Managed by |
+|------|---------------------|------------|
+| User account (`azureuser`) | `core_pulse.nix` | NixOS (declarative, baked into the VHD) |
+| SSH public key | `az vm create --ssh-key-values` | cloud-init (writes `~/.ssh/authorized_keys` at first boot) |
+| Password | Not applicable | `PasswordAuthentication = false` in sshd config |
+
+`openssh.authorizedKeys.keys` is **intentionally omitted** from the Nix
+declaration.  If you set it, NixOS writes the key to
+`/etc/ssh/authorized_keys.d/azureuser` — that file is managed by Nix and
+would be overwritten on every `nixos-rebuild`, conflicting with the
+deployment-time key Azure injects.  By leaving it unset, the only
+authorised key is the one cloud-init writes to
+`~azureuser/.ssh/authorized_keys`, which sshd reads via the default
+`AuthorizedKeysFile` path.
+
+> **This is not a hack — it is cleaner than the Ubuntu model.**  
+> The user's *existence* is version-controlled and reproducible; the
+> *credential* is injected at deployment time through the standard Azure
+> provisioning path.  On Ubuntu the user's existence is invisible,
+> depending entirely on cloud-init's runtime behaviour.
+
+The default `core_pulse.nix` also disables password authentication; make
+sure you have added your SSH public key before deploying.
 
 ### Disk controller compatibility (SCSI vs NVMe)
 
