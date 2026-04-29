@@ -453,8 +453,41 @@ jobs:
           IMG:      ${{ steps.image.outputs.image }}
           SSH_DIR:  ${{ steps.ssh.outputs.dir }}
           LOCATION: ${{ vars.AZURE_LOCATION }}
+          AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -euo pipefail
+
+          # --- OIDC re-login helper -------------------------------------------
+          # The GitHub-issued OIDC assertion that azure/login@v2 exchanged for
+          # an Azure access-token expires after ~5 minutes. If an `az` command
+          # takes longer (e.g. az vm create waiting 20 min for OS provisioning),
+          # the CLI silently tries to refresh using the stale assertion and every
+          # subsequent call fails with AADSTS700024. Fetching a fresh assertion
+          # from $ACTIONS_ID_TOKEN_REQUEST_URL and re-running `az login` avoids
+          # this. Cost: one lightweight HTTP call + one token exchange per retry.
+          az_oidc_login() {
+            echo "refreshing OIDC token..."
+            local oidc_token
+            if ! oidc_token=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
+              | jq -r '.value'); then
+              echo "::error::Failed to obtain OIDC token from GitHub"
+              return 1
+            fi
+            if [ -z "$oidc_token" ] || [ "$oidc_token" = "null" ]; then
+              echo "::error::Failed to obtain OIDC token from GitHub"
+              return 1
+            fi
+            az login --service-principal \
+              -u "$AZURE_CLIENT_ID" \
+              -t "$AZURE_TENANT_ID" \
+              --federated-token "$oidc_token" \
+              --output none
+            az account set -s "$AZURE_SUBSCRIPTION_ID"
+          }
+
           # The gallery image definition declares SCSI disk controller
           # support. Standard_B16as_v2 is a burstable B-series SKU
           # (SCSI-only). The NixOS initrd carries both NVMe and SCSI
@@ -465,6 +498,9 @@ jobs:
           # Retry with increasing back-off to ride out transient visibility.
           max_attempts=5
           for attempt in $(seq 1 $max_attempts); do
+            # Refresh OIDC credentials before each attempt so long-running
+            # retries never hit an expired assertion (AADSTS700024).
+            az_oidc_login
             echo "az vm create attempt $attempt"
             if az vm create -g "$RG" -n smoke-vm \
               --location "$LOCATION" \
@@ -577,8 +613,33 @@ jobs:
         if: always() && steps.preflight.outputs.ok == 'true'
         env:
           RG: ${{ steps.pick.outputs.rg }}
+          AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
         run: |
           set -u
+          # Re-authenticate: the OIDC assertion from the initial azure/login
+          # step expires after ~5 min, and long-running steps (VM create +
+          # retries) can easily exceed that. Fetch a fresh assertion so
+          # teardown never fails with AADSTS700024.
+          az_oidc_login() {
+            local oidc_token
+            oidc_token=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
+              | jq -r '.value')
+            if [ -z "$oidc_token" ] || [ "$oidc_token" = "null" ]; then
+              echo "::warning::Failed to obtain OIDC token for teardown"
+              return 1
+            fi
+            az login --service-principal \
+              -u "$AZURE_CLIENT_ID" \
+              -t "$AZURE_TENANT_ID" \
+              --federated-token "$oidc_token" \
+              --output none
+            az account set -s "$AZURE_SUBSCRIPTION_ID"
+          }
+          az_oidc_login || true
+
           ok=0
           for attempt in 1 2 3; do
             echo "::group::Teardown attempt ${attempt}"
