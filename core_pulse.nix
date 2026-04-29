@@ -70,6 +70,9 @@
     system_info = {
       distro = "nixos";
       network.renderers = [ "networkd" ];
+      # Note: this intentionally mirrors users.users.azureuser above.
+      # The NixOS declaration creates the OS user; this block tells
+      # cloud-init which account receives Azure-provided SSH keys.
       default_user = {
         name = "azureuser";
         lock_passwd = true;
