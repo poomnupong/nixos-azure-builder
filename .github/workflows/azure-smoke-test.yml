@@ -154,6 +154,11 @@ jobs:
           # in one leg doesn't wipe resources belonging to the other.
           # strategy.job-index is 0 for the first matrix entry (SCSI) and
           # 1 for the second (NVMe), mapping directly to the two-slot pool.
+          required_pool_size=2
+          if [ "${#pool[@]}" -lt "$required_pool_size" ]; then
+            echo "::error::AZURE_RUN_RGS must contain at least $required_pool_size resource groups for the smoke-test matrix, but got ${#pool[@]}: '$AZURE_RUN_RGS'"
+            exit 1
+          fi
           idx=$(( JOB_INDEX % ${#pool[@]} ))
           rg="${pool[$idx]}"
           echo "Selected run RG: $rg (pool size ${#pool[@]}, job-index $JOB_INDEX, controller $DISK_CONTROLLER)"
@@ -253,6 +258,13 @@ jobs:
           if [ "$state" = "Unattached" ] || [ "$state" = "Attached" ]; then
             echo "disk $DISK_NAME already sealed (state=$state) — reusing"
             disk_id=$(az disk show -g "$RG" -n "$DISK_NAME" --query id -o tsv)
+            # Ensure diskControllerTypes is stamped even on reuse — a prior
+            # run may have created the disk with SCSI-only or died before
+            # the PATCH completed.
+            echo "ensuring diskControllerTypes on reused disk"
+            az rest --method PATCH \
+              --url "${disk_id}?api-version=2024-03-02" \
+              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
           else
             if [ -n "$state" ]; then
               echo "disk $DISK_NAME exists in state '$state' — recreating"
@@ -314,7 +326,7 @@ jobs:
             # The Azure CLI has no flag to set supportedCapabilities.diskControllerTypes
             # on a managed disk (verified on azure-cli 2.85.0). Use the ARM REST API
             # directly so the disk matches the gallery image definition's
-            # DiskControllerTypes=SCSI feature declaration.
+            # DiskControllerTypes=SCSI, NVMe feature declaration.
             echo "stamping diskControllerTypes on managed disk"
             az rest --method PATCH \
               --url "${disk_id}?api-version=2024-03-02" \
@@ -356,6 +368,22 @@ jobs:
           #    Note: --security-type was removed from az sig image-definition
           #    create in Azure CLI 2.85.0; use --features for SecurityType if
           #    a non-Standard type is ever needed.
+          #    If a previous run created the definition with stale features
+          #    (e.g. SCSI-only), delete and recreate it so both matrix legs
+          #    can deploy.
+          if az sig image-definition show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" >/dev/null 2>&1; then
+            existing_features=$(az sig image-definition show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" \
+              --query "features[?name=='DiskControllerTypes'].value | [0]" -o tsv 2>/dev/null || true)
+            if [ "$existing_features" != "SCSI, NVMe" ]; then
+              echo "image definition $IMG_DEF has stale DiskControllerTypes='$existing_features' — recreating"
+              # Must delete the image version first (ARM won't delete a
+              # definition that still has versions).
+              if az sig image-version show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" >/dev/null 2>&1; then
+                az sig image-version delete -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" >/dev/null
+              fi
+              az sig image-definition delete -g "$RG" -r "$GALLERY" -i "$IMG_DEF" >/dev/null
+            fi
+          fi
           if ! az sig image-definition show -g "$RG" -r "$GALLERY" -i "$IMG_DEF" >/dev/null 2>&1; then
             echo "creating image definition $IMG_DEF"
             az sig image-definition create -g "$RG" -r "$GALLERY" -i "$IMG_DEF" \
