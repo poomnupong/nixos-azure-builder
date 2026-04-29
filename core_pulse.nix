@@ -45,16 +45,40 @@
 
   # Azure provisioning user.
   # az vm create --admin-username azureuser injects an SSH key during first
-  # boot via the Azure provisioning agent path (typically cloud-init, with
-  # waagent handling Azure provisioning details on some images).
-  # The user must exist at boot so the provisioning agent only needs to write
-  # the key to ~/.ssh/authorized_keys (which sshd reads via AuthorizedKeysFile).
-  # Do NOT set openssh.authorizedKeys.keys here — let the Azure provisioning
-  # agent manage it.
+  # boot via cloud-init (the provisioning agent on NixOS Azure images).
+  # The user must exist at boot so cloud-init only needs to write the key
+  # to ~/.ssh/authorized_keys (which sshd reads via AuthorizedKeysFile).
+  # Do NOT set openssh.authorizedKeys.keys here — let cloud-init manage it.
   users.users.azureuser = {
     isNormalUser = true;
     description = "Azure admin user";
     extraGroups = [ "wheel" ];
+  };
+
+  # ---------------------------------------------------------------------------
+  # cloud-init: wire azureuser as the default user
+  #
+  # The NixOS cloud-init module defaults to `users: ["root"]`, which tells
+  # cloud-init to only manage root.  Azure IMDS provides the admin username
+  # and SSH public key, but cloud-init ignores them unless a matching
+  # "default_user" is configured.  Setting `users: ["default"]` plus
+  # `system_info.default_user.name = "azureuser"` causes cloud-init to
+  # inject the Azure-provided SSH key into ~azureuser/.ssh/authorized_keys.
+  # ---------------------------------------------------------------------------
+  services.cloud-init.settings = {
+    users = [ "default" ];
+    system_info = {
+      distro = "nixos";
+      network.renderers = [ "networkd" ];
+      default_user = {
+        name = "azureuser";
+        lock_passwd = true;
+        gecos = "Azure Admin User";
+        groups = [ "wheel" ];
+        sudo = [ "ALL=(ALL) NOPASSWD:ALL" ];
+        shell = "/run/current-system/sw/bin/bash";
+      };
+    };
   };
 
   # Allow the default user to use sudo without a password (handy for CI/CD).
