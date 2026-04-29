@@ -266,8 +266,8 @@ jobs:
             # (verified on azure-cli 2.85.0; see the CLI sanity preflight
             # step earlier in this workflow). The disk controller is
             # selected per-VM via `az vm create --disk-controller-type`
-            # below; the smoke VM uses Standard_B16as_v2 (SCSI-only)
-            # with `--disk-controller-type SCSI`, booting from a gallery
+            # below; the smoke VM uses Standard_D4ads_v5 with
+            # `--disk-controller-type SCSI`, booting from a gallery
             # image that declares SCSI support.
             disk_id=$(az disk create -g "$RG" -n "$DISK_NAME" \
               --location "$LOCATION" \
@@ -497,9 +497,9 @@ jobs:
           }
 
           # The gallery image definition declares SCSI disk controller
-          # support. Standard_B16as_v2 is a burstable B-series SKU
-          # (SCSI-only). The NixOS initrd carries both NVMe and SCSI
-          # drivers via core_pulse.nix.
+          # support. Standard_D4ads_v5 supports both SCSI and NVMe;
+          # we pin SCSI via --disk-controller-type below. The NixOS
+          # initrd carries both NVMe and SCSI drivers via core_pulse.nix.
           #
           # Retry loop: even after aggregatedState=Completed + propagation
           # delay, the ARM deployment service may still not see the image.
@@ -513,7 +513,7 @@ jobs:
             if az vm create -g "$RG" -n smoke-vm \
               --location "$LOCATION" \
               --image "$IMG" \
-              --size Standard_B16as_v2 \
+              --size Standard_D4ads_v5 \
               --disk-controller-type SCSI \
               --admin-username azureuser \
               --ssh-key-values "$SSH_DIR/id.pub" \
