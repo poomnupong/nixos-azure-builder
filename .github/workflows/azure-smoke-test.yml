@@ -596,6 +596,14 @@ jobs:
           done
 
           echo "$out"
+          echo ""
+          echo "=========================================="
+          echo "  SSH TEST SUCCESSFUL"
+          echo "  Connected to azureuser@${IP} via SSH"
+          echo "  Attempt: $attempt of 6"
+          echo "=========================================="
+          echo ""
+
           echo "$out" | grep -Eq '^ID=nixos$' \
             || { echo "::error::/etc/os-release does not declare ID=nixos"; exit 1; }
           nv=$(echo "$out" | awk '/^---$/{flag=1;next} flag' | head -n1)
@@ -603,6 +611,13 @@ jobs:
             echo "::error::nixos-version returned empty output"
             exit 1
           fi
+          echo ""
+          echo "=========================================="
+          echo "  SMOKE TEST PASSED"
+          echo "  NixOS version: $nv"
+          echo "  OS verified:   ID=nixos"
+          echo "=========================================="
+          echo ""
           echo "nixos_version=$nv" >> "$GITHUB_OUTPUT"
 
       - name: Job summary
