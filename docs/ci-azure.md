@@ -178,11 +178,23 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    image definition (with `DiskControllerTypes=SCSI` declared), and
    image version are created from the staged managed disk.
 4. **Boot VM.** A `Standard_B16as_v2` VM is created from the gallery
-   image with `--disk-controller-type SCSI` and an ephemeral ed25519
-   SSH key generated on the runner. Inbound SSH is restricted by NSG
-   to the runner's egress IP only.
-5. **Assert.** SSH in, run `cat /etc/os-release` and `nixos-version`,
-   and require `ID=nixos` plus a non-empty version string.
+   image with `--disk-controller-type SCSI`, `--admin-username azureuser`,
+   and an ephemeral ed25519 SSH key generated on the runner. Inbound SSH
+   is restricted by NSG to the runner's egress IP only.
+
+   The `azureuser` account is **pre-declared in `core_pulse.nix`** so it
+   exists in the VHD at boot. The Azure provisioning agent (waagent/cloud-init)
+   only needs to write the SSH public key to
+   `~azureuser/.ssh/authorized_keys` — it does not need to create the user
+   (which is unreliable on NixOS; see the README's "User provisioning"
+   section for details). The SSH step makes up to 6 attempts with
+   `ConnectTimeout=15`, sleeping 15 s between attempts, to allow the
+   provisioning agent to finish writing the key after sshd is already
+   listening.
+
+5. **Assert.** SSH in as `azureuser`, run `cat /etc/os-release` and
+   `nixos-version`, and require `ID=nixos` plus a non-empty version
+   string.
 6. **Teardown.** Existing complete-mode empty-template deployment
    wipes every resource (VM, disk, NIC, NSG, public IP, VNet,
    image, *and the per-run staging disk*) but leaves the run RG and

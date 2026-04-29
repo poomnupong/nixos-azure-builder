@@ -561,14 +561,32 @@ jobs:
           SSH_DIR: ${{ steps.ssh.outputs.dir }}
         run: |
           set -euo pipefail
-          out=$(ssh \
-            -i "$SSH_DIR/id" \
-            -o StrictHostKeyChecking=accept-new \
-            -o BatchMode=yes \
-            -o ConnectTimeout=15 \
-            -o IdentitiesOnly=yes \
-            "azureuser@${IP}" \
-            'cat /etc/os-release; echo ---; nixos-version')
+
+          # The Azure provisioning agent (waagent/cloud-init) may still be
+          # writing the SSH key to ~azureuser/.ssh/authorized_keys after
+          # sshd is listening.  Retry SSH up to 6 times with 15 s sleeps
+          # between failures.  With ConnectTimeout=15, worst-case wall
+          # time is about 165 s.
+          for attempt in $(seq 1 6); do
+            echo "SSH login attempt $attempt"
+            if out=$(ssh \
+              -i "$SSH_DIR/id" \
+              -o StrictHostKeyChecking=accept-new \
+              -o BatchMode=yes \
+              -o ConnectTimeout=15 \
+              -o IdentitiesOnly=yes \
+              "azureuser@${IP}" \
+              'cat /etc/os-release; echo ---; nixos-version' 2>&1); then
+              break
+            fi
+            echo "  ssh failed: $out"
+            if [ "$attempt" -eq 6 ]; then
+              echo "::error::SSH login failed after 6 attempts: $out"
+              exit 1
+            fi
+            sleep 15
+          done
+
           echo "$out"
           echo "$out" | grep -Eq '^ID=nixos$' \
             || { echo "::error::/etc/os-release does not declare ID=nixos"; exit 1; }
