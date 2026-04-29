@@ -77,7 +77,7 @@ jobs:
         run: |
           VERSION="${{ steps.version.outputs.VERSION }}"
           VHD_PATH="${{ steps.artifact.outputs.VHD_PATH }}"
-          ASSET="nixos-azimage-${VERSION}.vhd"
+          ASSET="azimage-${VERSION}.vhd"
           cp "${VHD_PATH}" "${ASSET}"
           gzip -9 "${ASSET}"
           ls -lh "${ASSET}.gz"
@@ -100,15 +100,15 @@ jobs:
             release-asset limit. Decompress before use:
 
             ```sh
-            gunzip nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd.gz
+            gunzip azimage-${{ steps.version.outputs.VERSION }}.vhd.gz
             ```
 
-            Then stage `nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd`
+            Then stage `azimage-${{ steps.version.outputs.VERSION }}.vhd`
             as a **direct-upload managed disk** — no customer-owned Storage
             Account is required:
 
             ```sh
-            VHD=nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd
+            VHD=azimage-${{ steps.version.outputs.VERSION }}.vhd
             SIZE=$(stat -c %s "$VHD")
             DISK_ID=$(az disk create -g <rg> -n nixos-src \
               --location <region> \
@@ -140,6 +140,6 @@ jobs:
             (Uploading the `.vhd` to a Storage Account as a fixed-VHD page
             blob and pointing `az image create --source` at the blob URI
             still works if your environment requires it.)
-          files: nixos-azimage-${{ steps.version.outputs.VERSION }}.vhd.gz
+          files: azimage-${{ steps.version.outputs.VERSION }}.vhd.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
