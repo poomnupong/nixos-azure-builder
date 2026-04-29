@@ -44,10 +44,13 @@
   };
 
   # Azure provisioning user.
-  # az vm create --admin-username azureuser injects an SSH key via waagent.
-  # The user must exist at boot so waagent only needs to write the key to
-  # ~/.ssh/authorized_keys (which sshd reads via AuthorizedKeysFile).
-  # Do NOT set openssh.authorizedKeys.keys here — let waagent manage them.
+  # az vm create --admin-username azureuser injects an SSH key during first
+  # boot via the Azure provisioning agent path (typically cloud-init, with
+  # waagent handling Azure provisioning details on some images).
+  # The user must exist at boot so the provisioning agent only needs to write
+  # the key to ~/.ssh/authorized_keys (which sshd reads via AuthorizedKeysFile).
+  # Do NOT set openssh.authorizedKeys.keys here — let the Azure provisioning
+  # agent manage it.
   users.users.azureuser = {
     isNormalUser = true;
     description = "Azure admin user";

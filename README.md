@@ -130,11 +130,12 @@ both paths produce equivalent Managed Images.
 ### User provisioning (NixOS vs traditional Linux)
 
 On a traditional distribution like Ubuntu, `az vm create --admin-username`
-tells cloud-init to create the admin user imperatively at first boot using
-`useradd`.  On NixOS this is **unreliable** — cloud-init's imperative
-`useradd` can fail silently on NixOS's non-standard filesystem layout
-(e.g. `/etc/passwd` is a symlink into `/etc/static`), leaving the account
-partially created and SSH unusable.
+tells the Azure provisioning agent (cloud-init on most marketplace images,
+with waagent handling low-level Azure integration) to create the admin user
+imperatively at first boot using `useradd`.  On NixOS this is **unreliable**
+— the agent's imperative `useradd` can fail silently on NixOS's non-standard
+filesystem layout (e.g. `/etc/passwd` is a symlink into `/etc/static`),
+leaving the account partially created and SSH unusable.
 
 The NixOS-idiomatic fix is to **declare the admin user in `core_pulse.nix`**
 so it exists in `/etc/passwd` and has a proper home directory before the VM
@@ -152,7 +153,7 @@ users.users.azureuser = {
 | What | Where it comes from | Managed by |
 |------|---------------------|------------|
 | User account (`azureuser`) | `core_pulse.nix` | NixOS (declarative, baked into the VHD) |
-| SSH public key | `az vm create --ssh-key-values` | cloud-init (writes `~/.ssh/authorized_keys` at first boot) |
+| SSH public key | `az vm create --ssh-key-values` | Azure provisioning agent (writes `~/.ssh/authorized_keys` at first boot) |
 | Password | Not applicable | `PasswordAuthentication = false` in sshd config |
 
 `openssh.authorizedKeys.keys` is **intentionally omitted** from the Nix
@@ -160,7 +161,7 @@ declaration.  If you set it, NixOS writes the key to
 `/etc/ssh/authorized_keys.d/azureuser` — that file is managed by Nix and
 would be overwritten on every `nixos-rebuild`, conflicting with the
 deployment-time key Azure injects.  By leaving it unset, the only
-authorised key is the one cloud-init writes to
+authorised key is the one the Azure provisioning agent writes to
 `~azureuser/.ssh/authorized_keys`, which sshd reads via the default
 `AuthorizedKeysFile` path.
 

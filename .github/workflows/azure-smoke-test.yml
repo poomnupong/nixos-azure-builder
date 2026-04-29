@@ -562,9 +562,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          # waagent may still be writing the SSH key to
-          # ~azureuser/.ssh/authorized_keys after sshd is listening.
-          # Retry SSH up to 6 times with 15 s intervals (90 s total).
+          # The Azure provisioning agent (waagent/cloud-init) may still be
+          # writing the SSH key to ~azureuser/.ssh/authorized_keys after
+          # sshd is listening.  Retry SSH up to 6 times with 15 s sleeps
+          # between failures.  With ConnectTimeout=15, worst-case wall
+          # time is about 165 s.
           for attempt in $(seq 1 6); do
             echo "SSH login attempt $attempt"
             if out=$(ssh \

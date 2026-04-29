@@ -183,12 +183,14 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    is restricted by NSG to the runner's egress IP only.
 
    The `azureuser` account is **pre-declared in `core_pulse.nix`** so it
-   exists in the VHD at boot. cloud-init only needs to write the SSH
-   public key to `~azureuser/.ssh/authorized_keys` — it does not need to
-   create the user (which is unreliable on NixOS; see the README's
-   "User provisioning" section for details). The SSH step retries up to
-   6 × 15 s to allow cloud-init to finish writing the key after sshd is
-   already listening.
+   exists in the VHD at boot. The Azure provisioning agent (waagent/cloud-init)
+   only needs to write the SSH public key to
+   `~azureuser/.ssh/authorized_keys` — it does not need to create the user
+   (which is unreliable on NixOS; see the README's "User provisioning"
+   section for details). The SSH step makes up to 6 attempts with
+   `ConnectTimeout=15`, sleeping 15 s between attempts, to allow the
+   provisioning agent to finish writing the key after sshd is already
+   listening.
 
 5. **Assert.** SSH in as `azureuser`, run `cat /etc/os-release` and
    `nixos-version`, and require `ID=nixos` plus a non-empty version
