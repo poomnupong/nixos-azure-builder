@@ -74,6 +74,17 @@
   virtualisation.diskSize = 8192; # 8 GiB
 
   # ---------------------------------------------------------------------------
+  # VM Generation
+  #
+  # Build a Generation 2 (UEFI/GPT) VHD. The smoke test and weekly_forge
+  # both upload the VHD with `--hyper-v-generation V2`, so the image must
+  # be built with GPT partitioning and an ESP (EFI System Partition).
+  # The azure-image.nix default is "v1" (MBR/BIOS); deploying a Gen1 VHD
+  # as a Gen2 disk causes the VM to fail UEFI boot — waagent/cloud-init
+  # never run, and Azure reports OSProvisioningTimedOut.
+  virtualisation.azureImage.vmGeneration = "v2";
+
+  # ---------------------------------------------------------------------------
   # Disk controller support (SCSI + NVMe)
   #
   # Azure VM families differ in which remote-disk controller they expose to
