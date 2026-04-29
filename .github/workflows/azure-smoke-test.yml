@@ -2,10 +2,13 @@ name: Azure Smoke Test
 
 # ---------------------------------------------------------------------------
 # End-to-end smoke test for the latest published VHD:
-#   1. pick one of the perpetual run RGs from the pool
+#   1. pick one of the perpetual run RGs from the pool (one per matrix leg)
 #   2. deploy the latest released VHD as a VM in that RG
 #   3. SSH to the VM and assert the NixOS version string
 #   4. tear the RG down to *empty* (not deleted — see docs/ci-azure.md)
+#
+# The job uses a strategy matrix to test both SCSI and NVMe disk controllers
+# in parallel, each in its own run RG. Both legs use Standard_D4ads_v5.
 #
 # Teardown is done with a complete-mode deployment of an empty template so
 # that ARM computes the delete DAG itself (disks before NICs before VNets,
@@ -34,7 +37,7 @@ concurrency:
 
 jobs:
   smoke:
-    name: Deploy latest VHD and smoke-test
+    name: "Smoke ${{ matrix.disk_controller }}"
     # When triggered by workflow_run (Weekly Forge), only run if the forge succeeded.
     # Schedule and workflow_dispatch triggers always run (workflow_run.conclusion is empty).
     if: >-
@@ -42,6 +45,10 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        disk_controller: [SCSI, NVMe]
 
     steps:
       - name: Preflight — verify ref is allowed
@@ -130,22 +137,26 @@ jobs:
           tenant-id:       ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Pick a run RG from the pool based on the ISO week number so the
-      # same RG isn't hammered every week and we exercise both slots.
+      # Pick a run RG from the pool. Each matrix leg (SCSI / NVMe) gets
+      # its own RG so that complete-mode teardown in one leg doesn't wipe
+      # the other's resources.
       - name: Select run RG from pool
         if: steps.preflight.outputs.ok == 'true'
         id: pick
         env:
           AZURE_RUN_RGS: ${{ vars.AZURE_RUN_RGS }}
+          JOB_INDEX: ${{ strategy.job-index }}
+          DISK_CONTROLLER: ${{ matrix.disk_controller }}
         run: |
           set -eu
           read -r -a pool <<< "$AZURE_RUN_RGS"
-          week=$(date -u +%V)
-          # `10#` forces base-10 parsing; ISO week numbers like "08"/"09"
-          # would otherwise be treated as invalid octal by bash arithmetic.
-          idx=$(( 10#$week % ${#pool[@]} ))
+          # Each matrix leg needs its own RG so that complete-mode teardown
+          # in one leg doesn't wipe resources belonging to the other.
+          # strategy.job-index is 0 for the first matrix entry (SCSI) and
+          # 1 for the second (NVMe), mapping directly to the two-slot pool.
+          idx=$(( JOB_INDEX % ${#pool[@]} ))
           rg="${pool[$idx]}"
-          echo "Selected run RG: $rg (pool size ${#pool[@]}, week $week)"
+          echo "Selected run RG: $rg (pool size ${#pool[@]}, job-index $JOB_INDEX, controller $DISK_CONTROLLER)"
           echo "rg=$rg" >> "$GITHUB_OUTPUT"
 
       # --- actual deploy + smoke test --------------------------------------
@@ -264,11 +275,10 @@ jobs:
             # or managed image — `az disk create`, `az disk update`, and
             # `az image create` all reject `--supported-disk-controller-types`
             # (verified on azure-cli 2.85.0; see the CLI sanity preflight
-            # step earlier in this workflow). The disk controller is
-            # selected per-VM via `az vm create --disk-controller-type`
-            # below; the smoke VM uses Standard_D4ads_v5 with
-            # `--disk-controller-type SCSI`, booting from a gallery
-            # image that declares SCSI support.
+            # step earlier in this workflow). We stamp "SCSI, NVMe" via
+            # the ARM REST API after sealing the disk, then the gallery
+            # image definition also declares both controller types so the
+            # matrix can test each one independently.
             disk_id=$(az disk create -g "$RG" -n "$DISK_NAME" \
               --location "$LOCATION" \
               --upload-type Upload \
@@ -308,7 +318,7 @@ jobs:
             echo "stamping diskControllerTypes on managed disk"
             az rest --method PATCH \
               --url "${disk_id}?api-version=2024-03-02" \
-              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI"}}}'
+              --body '{"properties":{"supportedCapabilities":{"diskControllerTypes":"SCSI, NVMe"}}}'
             rm -f "$VHD"
           fi
           echo "disk_id=$disk_id" >> "$GITHUB_OUTPUT"
@@ -339,7 +349,7 @@ jobs:
               --location "$LOCATION" >/dev/null
           fi
 
-          # 2. Create image definition with SCSI support.
+          # 2. Create image definition with SCSI + NVMe support.
           #    The source VHD has no TrustedLaunch artifacts (vTPM, SecureBoot),
           #    so we omit any SecurityType feature — Azure defaults to Standard
           #    when no SecurityType is declared.
@@ -354,7 +364,7 @@ jobs:
               --hyper-v-generation V2 \
               --location "$LOCATION" \
               --publisher NixOS-CI --offer NixOS --sku smoke \
-              --features "DiskControllerTypes=SCSI" >/dev/null
+              --features "DiskControllerTypes=SCSI, NVMe" >/dev/null
           fi
 
           # 3. Create image version from the uploaded managed disk.
@@ -461,6 +471,7 @@ jobs:
           IMG:      ${{ steps.image.outputs.image }}
           SSH_DIR:  ${{ steps.ssh.outputs.dir }}
           LOCATION: ${{ vars.AZURE_LOCATION }}
+          DISK_CONTROLLER: ${{ matrix.disk_controller }}
           AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -496,10 +507,11 @@ jobs:
             az account set -s "$AZURE_SUBSCRIPTION_ID"
           }
 
-          # The gallery image definition declares SCSI disk controller
-          # support. Standard_D4ads_v5 supports both SCSI and NVMe;
-          # we pin SCSI via --disk-controller-type below. The NixOS
-          # initrd carries both NVMe and SCSI drivers via core_pulse.nix.
+          # The gallery image definition declares both SCSI and NVMe disk
+          # controller support. Standard_D4ads_v5 supports both SCSI and
+          # NVMe; the matrix variable selects which one this leg tests.
+          # The NixOS initrd carries both NVMe and SCSI drivers via
+          # core_pulse.nix.
           #
           # Retry loop: even after aggregatedState=Completed + propagation
           # delay, the ARM deployment service may still not see the image.
@@ -514,7 +526,7 @@ jobs:
               --location "$LOCATION" \
               --image "$IMG" \
               --size Standard_D4ads_v5 \
-              --disk-controller-type SCSI \
+              --disk-controller-type "$DISK_CONTROLLER" \
               --admin-username azureuser \
               --ssh-key-values "$SSH_DIR/id.pub" \
               --public-ip-sku Standard \
@@ -628,12 +640,14 @@ jobs:
           IP:      ${{ steps.vm.outputs.public_ip }}
           NV:      ${{ steps.assert.outputs.nixos_version }}
           RG:      ${{ steps.pick.outputs.rg }}
+          DISK_CONTROLLER: ${{ matrix.disk_controller }}
         run: |
           {
-            echo "### Smoke test summary"
+            echo "### Smoke test summary — ${DISK_CONTROLLER}"
             echo
             echo "| Field | Value |"
             echo "|-------|-------|"
+            echo "| Disk controller | \`${DISK_CONTROLLER}\` |"
             echo "| Release tag | \`${TAG:-?}\` |"
             echo "| Managed image | \`${IMG:-?}\` |"
             echo "| Run RG | \`${RG:-?}\` |"
