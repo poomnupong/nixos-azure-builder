@@ -184,10 +184,8 @@ The weekly smoke test exercises the full release pipeline end-to-end:
    share the same run RG and gallery image prepared in step 3. Each leg
    creates a VM with a unique name (`smoke-vm-scsi` / `smoke-vm-nvme`)
    and its own NSG (`smoke-nsg-scsi` / `smoke-nsg-nvme`), using
-   `--disk-controller-type` from the matrix. The VM SKU is paired per
-   controller type:
-     - **SCSI** → `Standard_D4ads_v5` (v5, SCSI-only)
-     - **NVMe** → `Standard_D4as_v6`  (v6, supports both SCSI and NVMe)
+   `--disk-controller-type` from the matrix. Both legs use
+   `Standard_D4as_v6` (v6 series, 4 vCPU, supports both SCSI and NVMe).
 
    An ephemeral ed25519 SSH key is generated per leg. Inbound SSH is
    restricted by each leg's NSG to that runner's egress IP only.
