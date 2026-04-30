@@ -149,27 +149,23 @@
   #     kernel module.  Without it, cloud-init cannot reach the Azure
   #     wireserver (168.63.129.16), causing OSProvisioningTimedOut.
   #
-  # To make a single image bootable on all of them, the initramfs must contain
-  # the drivers for both controllers and both network stacks; otherwise
-  # stage-1 cannot find the root filesystem or establish networking.
-  # nixos-generators' azure profile normally pulls these in, but we list
-  # them explicitly so the image remains hardware-agnostic even if the
-  # upstream profile changes.
-  #
-  # Root is identified by label/UUID (set by the azure profile), so the
+  # Root is identified by label (set by the azure profile), so the
   # difference between /dev/sda and /dev/nvme0n1 is irrelevant once the
   # driver is loaded.
-  boot.initrd.availableKernelModules = [
-    # NVMe (v6 and v7 SKUs)
+  #
+  # The upstream azure-common.nix already force-loads the Hyper-V stack
+  # (hv_vmbus, hv_netvsc, hv_utils, hv_storvsc) via kernelModules.
+  # We add NVMe modules to kernelModules (force-loaded) rather than
+  # availableKernelModules (udev-triggered) because Azure's emulated
+  # NVMe controller is not reliably detected by udev during initramfs
+  # coldplug — leaving the root device invisible and causing a panic →
+  # reboot loop → OSProvisioningTimedOut.
+  # MANA is also force-loaded: Azure VMs need networking available
+  # early so cloud-init can reach the wireserver (168.63.129.16)
+  # and report provisioning status within Azure's 20-min timeout.
+  boot.initrd.kernelModules = [
     "nvme"
     "nvme_core"
-    # Hyper-V SCSI / VMBus / netvsc (v5 and earlier)
-    "hv_storvsc"
-    "hv_vmbus"
-    "hv_netvsc"
-    # MANA — Microsoft Azure Network Adapter (v7+ SKUs).
-    # Without this, cloud-init on v7 VMs cannot reach the Azure
-    # wireserver (168.63.129.16), causing OSProvisioningTimedOut.
     "mana"
   ];
 }
