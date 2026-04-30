@@ -14,7 +14,9 @@ name: Azure Smoke Test
 #
 # Both matrix legs share a single run RG. Resource names include the
 # controller type where needed (VM, NSG) to avoid collisions.
-# Standard_D4ads_v5 supports both SCSI and NVMe disk controllers.
+# Standard_D4ads_v5 supports SCSI only; Standard_D4as_v6 supports
+# both SCSI and NVMe. The matrix pairs each controller with a
+# compatible VM SKU.
 #
 # Teardown is done with a complete-mode deployment of an empty template so
 # that ARM computes the delete DAG itself (disks before NICs before VNets,
@@ -470,7 +472,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        disk_controller: [SCSI, NVMe]
+        include:
+          - disk_controller: SCSI
+            vm_size: Standard_D4ads_v5
+          - disk_controller: NVMe
+            vm_size: Standard_D4as_v6
 
     steps:
       - name: Azure login (OIDC)
@@ -545,6 +551,7 @@ jobs:
           SSH_DIR:  ${{ steps.ssh.outputs.dir }}
           LOCATION: ${{ vars.AZURE_LOCATION }}
           DISK_CONTROLLER: ${{ matrix.disk_controller }}
+          VM_SIZE:         ${{ matrix.vm_size }}
           AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -585,8 +592,10 @@ jobs:
           }
 
           # The gallery image definition declares both SCSI and NVMe disk
-          # controller support. Standard_D4ads_v5 supports both SCSI and
-          # NVMe; the matrix variable selects which one this leg tests.
+          # controller support.  Each matrix leg pairs the disk controller
+          # with a VM SKU that actually supports it:
+          #   SCSI → Standard_D4ads_v5 (v5, SCSI-only)
+          #   NVMe → Standard_D4as_v6  (v6, supports both SCSI and NVMe)
           # The NixOS initrd carries both NVMe and SCSI drivers via
           # core_pulse.nix.
           #
@@ -598,11 +607,11 @@ jobs:
             # Refresh OIDC credentials before each attempt so long-running
             # retries never hit an expired assertion (AADSTS700024).
             az_oidc_login
-            echo "az vm create attempt $attempt"
+            echo "az vm create attempt $attempt (size=$VM_SIZE, disk=$DISK_CONTROLLER)"
             if az vm create -g "$RG" -n "$vm_name" \
               --location "$LOCATION" \
               --image "$IMG" \
-              --size Standard_D4ads_v5 \
+              --size "$VM_SIZE" \
               --disk-controller-type "$DISK_CONTROLLER" \
               --admin-username azureuser \
               --ssh-key-values "$SSH_DIR/id.pub" \
@@ -637,15 +646,60 @@ jobs:
       - name: Wait for SSH on VM
         env:
           IP: ${{ steps.vm.outputs.public_ip }}
+          RG: ${{ needs.prepare.outputs.rg }}
+          DISK_CONTROLLER: ${{ matrix.disk_controller }}
         run: |
           set -u
+          ctrl_lower=$(echo "$DISK_CONTROLLER" | tr '[:upper:]' '[:lower:]')
+          vm_name="smoke-vm-${ctrl_lower}"
+
+          # Poll for SSH, but also check the VM's power state via
+          # az vm get-instance-view to detect reboot loops or failed
+          # provisioning early instead of waiting the full 5 minutes.
+          provisioning_failed=false
           for i in $(seq 1 30); do
             if nc -z -w 5 "$IP" 22; then
               echo "SSH reachable after $i attempt(s)"
               exit 0
             fi
+
+            # Every 5th attempt (~50s), query the VM instance view for
+            # signs of trouble: failed provisioning or a VM that has
+            # stopped (indicating a crash/reboot-loop that Azure gave up on).
+            if [ $((i % 5)) -eq 0 ]; then
+              echo "Checking VM instance view (attempt $i)..."
+              instance_json=$(az vm get-instance-view -g "$RG" -n "$vm_name" -o json 2>/dev/null || true)
+              if [ -n "$instance_json" ]; then
+                prov_state=$(echo "$instance_json" | jq -r '.instanceView.statuses[]? | select(.code | startswith("ProvisioningState/")) | .code' 2>/dev/null || true)
+                power_state=$(echo "$instance_json" | jq -r '.instanceView.statuses[]? | select(.code | startswith("PowerState/")) | .code' 2>/dev/null || true)
+                echo "  ProvisioningState: ${prov_state:-unknown}"
+                echo "  PowerState: ${power_state:-unknown}"
+
+                # Detect VM stopped/deallocated (reboot loop that Azure gave up on)
+                if echo "$power_state" | grep -qiE 'stopped|deallocated'; then
+                  echo "::error::VM $vm_name is $power_state — likely crashed or stuck in a reboot loop"
+                  provisioning_failed=true
+                  break
+                fi
+                # Detect failed provisioning (e.g. OSProvisioningTimedOut)
+                if echo "$prov_state" | grep -qi 'failed'; then
+                  echo "::error::VM $vm_name provisioning failed: $prov_state"
+                  provisioning_failed=true
+                  break
+                fi
+              fi
+            fi
+
             sleep 10
           done
+
+          if [ "$provisioning_failed" = true ]; then
+            # Try to fetch boot diagnostics for additional context
+            echo "--- Boot diagnostics (last 50 lines) ---"
+            az vm boot-diagnostics get-boot-log -g "$RG" -n "$vm_name" 2>/dev/null | tail -50 || echo "(boot diagnostics unavailable)"
+            exit 1
+          fi
+
           echo "::error::SSH never came up on $IP after 5 minutes"
           exit 1
 
