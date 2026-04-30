@@ -55,10 +55,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
-      ok:    ${{ steps.preflight.outputs.ok }}
-      rg:    ${{ steps.pick.outputs.rg }}
-      tag:   ${{ steps.rel.outputs.tag }}
-      image: ${{ steps.image.outputs.image }}
+      ok:      ${{ steps.preflight.outputs.ok }}
+      rg:      ${{ steps.pick.outputs.rg }}
+      tag:     ${{ steps.rel.outputs.tag }}
+      gallery: ${{ steps.image.outputs.gallery }}
 
     steps:
       - name: "Preflight \u2014 verify ref is allowed"
@@ -447,11 +447,12 @@ jobs:
             echo "image version already existed; skipping propagation delay"
           fi
 
-          # Build the fully-qualified image ID for az vm create.
-          image_id=$(az sig image-version show \
-            -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" \
-            --query id -o tsv)
-          echo "image=$image_id" >> "$GITHUB_OUTPUT"
+          # Export the gallery name so the smoke job can look up the
+          # image version ID itself.  We intentionally do NOT export the
+          # full image-version resource ID because it embeds the Azure
+          # subscription ID, which is a masked secret — GitHub Actions
+          # silently drops any job output that contains a secret value.
+          echo "gallery=$GALLERY" >> "$GITHUB_OUTPUT"
 
   # =====================================================================
   # Job 2: smoke --- boot a VM per controller type (matrix) and SSH-assert
@@ -514,11 +515,30 @@ jobs:
             --destination-port-ranges 22 \
             --access Allow --protocol Tcp --direction Inbound >/dev/null
 
+      - name: Resolve gallery image ID
+        id: img
+        env:
+          RG:      ${{ needs.prepare.outputs.rg }}
+          GALLERY: ${{ needs.prepare.outputs.gallery }}
+          LOCATION: ${{ vars.AZURE_LOCATION }}
+        run: |
+          set -euo pipefail
+          IMG_DEF="nixos-smoke"
+          IMG_VER="1.0.0"
+          image_id=$(az sig image-version show \
+            -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" \
+            --query id -o tsv)
+          if [ -z "$image_id" ]; then
+            echo "::error::Failed to resolve gallery image version"
+            exit 1
+          fi
+          echo "image=$image_id" >> "$GITHUB_OUTPUT"
+
       - name: Create smoke-test VM
         id: vm
         env:
           RG:       ${{ needs.prepare.outputs.rg }}
-          IMG:      ${{ needs.prepare.outputs.image }}
+          IMG:      ${{ steps.img.outputs.image }}
           SSH_DIR:  ${{ steps.ssh.outputs.dir }}
           LOCATION: ${{ vars.AZURE_LOCATION }}
           DISK_CONTROLLER: ${{ matrix.disk_controller }}
@@ -688,7 +708,7 @@ jobs:
         if: always()
         env:
           TAG:     ${{ needs.prepare.outputs.tag }}
-          IMG:     ${{ needs.prepare.outputs.image }}
+          IMG:     ${{ steps.img.outputs.image }}
           IP:      ${{ steps.vm.outputs.public_ip }}
           NV:      ${{ steps.assert.outputs.nixos_version }}
           RG:      ${{ needs.prepare.outputs.rg }}
