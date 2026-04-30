@@ -179,15 +179,24 @@ The weekly smoke test exercises the full release pipeline end-to-end:
 3. **Create Compute Gallery image.** A per-run Azure Compute Gallery,
    image definition (with `DiskControllerTypes=SCSI, NVMe` declared),
    and image version are created from the staged managed disk.
-4. **Boot VM (matrix).** The `smoke` job runs as a matrix
-   (`disk_controller: [SCSI, NVMe]`, `fail-fast: false`) — both legs
-   share the same run RG and gallery image prepared in step 3. Each leg
-   creates a `Standard_D4ads_v5` VM with a unique name
-   (`smoke-vm-scsi` / `smoke-vm-nvme`) and its own NSG
-   (`smoke-nsg-scsi` / `smoke-nsg-nvme`), using
-   `--disk-controller-type` from the matrix. An ephemeral ed25519 SSH
-   key is generated per leg. Inbound SSH is restricted by each leg's
-   NSG to that runner's egress IP only.
+4. **Boot VM (matrix).** The `smoke` job runs as an `include`-based
+   matrix (`fail-fast: false`) pairing each `disk_controller` with its
+   `vm_size` — both legs share the same run RG and gallery image
+   prepared in step 3. Each leg
+   creates a VM with a unique name (`smoke-vm-scsi` / `smoke-vm-nvme`)
+   and its own NSG (`smoke-nsg-scsi` / `smoke-nsg-nvme`), using
+   `--disk-controller-type` from the matrix. The VM SKU is paired per
+   controller type:
+     - **SCSI** → `Standard_D4as_v6` (v6, 4 vCPU)
+     - **NVMe** → `Standard_D4as_v7` (v7, latest generation, 4 vCPU)
+
+   An ephemeral ed25519 SSH key is generated per leg. Inbound SSH is
+   restricted by each leg's NSG to that runner's egress IP only.
+
+   While waiting for SSH, the workflow also polls `az vm get-instance-view`
+   to detect reboot loops or failed provisioning early (VM power state
+   stopped/deallocated, or provisioning state failed) rather than waiting
+   for the full SSH timeout.
 
    The `azureuser` account is **pre-declared in `core_pulse.nix`** so it
    exists in the VHD at boot. The Azure provisioning agent (waagent/cloud-init)
