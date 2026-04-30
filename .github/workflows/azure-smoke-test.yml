@@ -59,6 +59,8 @@ jobs:
       rg:      ${{ steps.pick.outputs.rg }}
       tag:     ${{ steps.rel.outputs.tag }}
       gallery: ${{ steps.image.outputs.gallery }}
+      img_def: ${{ steps.image.outputs.img_def }}
+      img_ver: ${{ steps.image.outputs.img_ver }}
 
     steps:
       - name: "Preflight \u2014 verify ref is allowed"
@@ -453,6 +455,8 @@ jobs:
           # subscription ID, which is a masked secret — GitHub Actions
           # silently drops any job output that contains a secret value.
           echo "gallery=$GALLERY" >> "$GITHUB_OUTPUT"
+          echo "img_def=$IMG_DEF" >> "$GITHUB_OUTPUT"
+          echo "img_ver=$IMG_VER" >> "$GITHUB_OUTPUT"
 
   # =====================================================================
   # Job 2: smoke --- boot a VM per controller type (matrix) and SSH-assert
@@ -520,10 +524,10 @@ jobs:
         env:
           RG:      ${{ needs.prepare.outputs.rg }}
           GALLERY: ${{ needs.prepare.outputs.gallery }}
+          IMG_DEF: ${{ needs.prepare.outputs.img_def }}
+          IMG_VER: ${{ needs.prepare.outputs.img_ver }}
         run: |
           set -euo pipefail
-          IMG_DEF="nixos-smoke"
-          IMG_VER="1.0.0"
           image_id=$(az sig image-version show \
             -g "$RG" -r "$GALLERY" -i "$IMG_DEF" -e "$IMG_VER" \
             --query id -o tsv)
