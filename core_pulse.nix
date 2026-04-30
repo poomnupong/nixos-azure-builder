@@ -66,6 +66,13 @@
   # inject the Azure-provided SSH key into ~azureuser/.ssh/authorized_keys.
   # ---------------------------------------------------------------------------
   services.cloud-init.settings = {
+    # Tell cloud-init to use the Azure data source directly.  Without
+    # this, cloud-init auto-detects by probing every compiled-in data
+    # source in priority order, which can add minutes to first-boot
+    # provisioning and push v7-series VMs past Azure's 20-minute
+    # OSProvisioningTimedOut window.
+    datasource_list = [ "Azure" ];
+
     users = [ "default" ];
     system_info = {
       distro = "nixos";
@@ -126,7 +133,7 @@
   virtualisation.azureImage.vmGeneration = "v2";
 
   # ---------------------------------------------------------------------------
-  # Disk controller support (SCSI + NVMe)
+  # Disk controller + network driver support (SCSI + NVMe, netvsc + MANA)
   #
   # Azure VM families differ in which remote-disk controller they expose to
   # the guest:
@@ -135,11 +142,20 @@
   #   * v6 series (Dasv6/Easv6): Hyper-V SCSI by default, or NVMe when
   #     deployed with `az vm create --disk-controller-type NVMe`.
   #   * v7 series (Dasv7/Easv7): NVMe-only (root appears as /dev/nvme0n1).
+  #
+  # Network adapters also vary:
+  #   * v5 and earlier: Mellanox SR-IOV accelerated NIC + hv_netvsc fallback.
+  #   * v6: Mellanox SR-IOV accelerated NIC + hv_netvsc fallback.
+  #   * v7+: MANA (Microsoft Azure Network Adapter) — requires the `mana`
+  #     kernel module.  Without it, cloud-init cannot reach the Azure
+  #     wireserver (168.63.129.16), causing OSProvisioningTimedOut.
+  #
   # To make a single image bootable on all of them, the initramfs must contain
-  # the drivers for both controllers; otherwise stage-1 cannot find the root
-  # filesystem on whichever controller Azure picked. nixos-generators' azure
-  # profile normally pulls these in, but we list them explicitly so the image
-  # remains controller-agnostic even if the upstream profile changes.
+  # the drivers for both controllers and both network stacks; otherwise
+  # stage-1 cannot find the root filesystem or establish networking.
+  # nixos-generators' azure profile normally pulls these in, but we list
+  # them explicitly so the image remains hardware-agnostic even if the
+  # upstream profile changes.
   #
   # Root is identified by label/UUID (set by the azure profile), so the
   # difference between /dev/sda and /dev/nvme0n1 is irrelevant once the
@@ -152,5 +168,9 @@
     "hv_storvsc"
     "hv_vmbus"
     "hv_netvsc"
+    # MANA — Microsoft Azure Network Adapter (v7+ SKUs).
+    # Without this, cloud-init on v7 VMs cannot reach the Azure
+    # wireserver (168.63.129.16), causing OSProvisioningTimedOut.
+    "mana"
   ];
 }
