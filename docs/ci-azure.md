@@ -179,9 +179,10 @@ The weekly smoke test exercises the full release pipeline end-to-end:
 3. **Create Compute Gallery image.** A per-run Azure Compute Gallery,
    image definition (with `DiskControllerTypes=SCSI, NVMe` declared),
    and image version are created from the staged managed disk.
-4. **Boot VM (matrix).** The `smoke` job runs as a matrix
-   (`disk_controller: [SCSI, NVMe]`, `fail-fast: false`) — both legs
-   share the same run RG and gallery image prepared in step 3. Each leg
+4. **Boot VM (matrix).** The `smoke` job runs as an `include`-based
+   matrix (`fail-fast: false`) pairing each `disk_controller` with its
+   `vm_size` — both legs share the same run RG and gallery image
+   prepared in step 3. Each leg
    creates a VM with a unique name (`smoke-vm-scsi` / `smoke-vm-nvme`)
    and its own NSG (`smoke-nsg-scsi` / `smoke-nsg-nvme`), using
    `--disk-controller-type` from the matrix. The VM SKU is paired per
