@@ -14,9 +14,9 @@ name: Azure Smoke Test
 #
 # Both matrix legs share a single run RG. Resource names include the
 # controller type where needed (VM, NSG) to avoid collisions.
-# Standard_D4as_v6 supports both SCSI and NVMe; Standard_D4as_v7
-# (latest v7 series) is used for NVMe. The matrix pairs each
-# controller with its VM SKU.
+# Standard_D4ads_v5 is used for SCSI (last known good SKU);
+# Standard_D4as_v6 is used for NVMe (v6 supports NVMe).
+# The matrix pairs each controller with its compatible VM SKU.
 #
 # Teardown is done with a complete-mode deployment of an empty template so
 # that ARM computes the delete DAG itself (disks before NICs before VNets,
@@ -474,9 +474,9 @@ jobs:
       matrix:
         include:
           - disk_controller: SCSI
-            vm_size: Standard_D4as_v6
+            vm_size: Standard_D4ads_v5
           - disk_controller: NVMe
-            vm_size: Standard_D4as_v7
+            vm_size: Standard_D4as_v6
 
     steps:
       - name: Azure login (OIDC)
@@ -594,8 +594,8 @@ jobs:
           # The gallery image definition declares both SCSI and NVMe disk
           # controller support.  Each matrix leg pairs the disk controller
           # with a VM SKU that supports it:
-          #   SCSI → Standard_D4as_v6 (v6, supports both SCSI and NVMe)
-          #   NVMe → Standard_D4as_v7 (v7, latest generation)
+          #   SCSI → Standard_D4ads_v5 (v5, SCSI-only — last known good)
+          #   NVMe → Standard_D4as_v6 (v6, supports NVMe)
           # The NixOS initrd carries both NVMe and SCSI drivers via
           # core_pulse.nix.
           #
