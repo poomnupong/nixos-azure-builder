@@ -148,7 +148,7 @@ environment.
 The weekly smoke test exercises the full release pipeline end-to-end:
 
 1. **Resolve latest release.** `gh release list/view` finds the most
-   recent tag and the matching `nixos-azimage-<tag>.vhd.gz` asset.
+   recent tag and the matching `azimage-<tag>.vhd.gz` asset.
 2. **Stage VHD as a managed disk.** Download + decompress on the
    runner, then provision an empty managed disk in the selected run
    RG:
