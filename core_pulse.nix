@@ -160,10 +160,19 @@
   # NVMe controller is not reliably detected by udev during initramfs
   # coldplug — leaving the root device invisible and causing a panic →
   # reboot loop → OSProvisioningTimedOut.
+  #
+  # Critically, Azure NVMe sits behind a Hyper-V virtual PCI bridge:
+  #   hv_vmbus → pci_hyperv (virtual PCI bus) → nvme (PCIe NVMe device)
+  # Without pci_hyperv, the virtual PCI bus never initializes and the
+  # NVMe controller is invisible to the guest kernel. SCSI bypasses
+  # PCI entirely (it goes through hv_storvsc over VMBus), which is why
+  # SCSI boots worked without this module.
+  #
   # MANA is also force-loaded: Azure VMs need networking available
   # early so cloud-init can reach the wireserver (168.63.129.16)
   # and report provisioning status within Azure's 20-min timeout.
   boot.initrd.kernelModules = [
+    "pci_hyperv"
     "nvme"
     "nvme_core"
     "mana"
