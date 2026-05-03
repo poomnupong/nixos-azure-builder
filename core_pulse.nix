@@ -13,6 +13,20 @@
 
 {
   # ---------------------------------------------------------------------------
+  # Dynamic linker compatibility (nix-ld)
+  #
+  # NixOS lacks the standard /lib64/ld-linux-x86-64.so.2 dynamic linker.
+  # Azure VM extensions (e.g. RunCommandLinux, installed by `az vm run-command
+  # invoke`) are dynamically-linked ELF binaries that expect it. Without
+  # nix-ld, these extensions fail with exit code 127.
+  #
+  # Baking nix-ld into the image ensures `az vm run-command` works from
+  # first boot — no nixos-rebuild required. This unblocks CI/CD pipelines
+  # (like poomlab-azure) that use run-command to push configuration to VMs.
+  # ---------------------------------------------------------------------------
+  programs.nix-ld.enable = true;
+
+  # ---------------------------------------------------------------------------
   # System packages
   # Add any tools you want present in the image.
   # ---------------------------------------------------------------------------

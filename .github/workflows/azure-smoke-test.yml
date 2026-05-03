@@ -761,6 +761,104 @@ jobs:
           echo ""
           echo "nixos_version=$nv" >> "$GITHUB_OUTPUT"
 
+      - name: Test az vm run-command
+        id: runcmd
+        # Only run if the SSH test passed (nixos_version is non-empty).
+        if: steps.assert.outputs.nixos_version != ''
+        env:
+          RG:              ${{ needs.prepare.outputs.rg }}
+          DISK_CONTROLLER: ${{ matrix.disk_controller }}
+          AZURE_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          set -euo pipefail
+
+          ctrl_lower=$(echo "$DISK_CONTROLLER" | tr '[:upper:]' '[:lower:]')
+          vm_name="smoke-vm-${ctrl_lower}"
+
+          # --- OIDC re-login helper -------------------------------------------
+          # By the time we reach this step the original OIDC token from
+          # azure/login@v2 has long expired (~5 minutes). Refresh it before
+          # calling az vm run-command, which can itself take 1-2 minutes.
+          az_oidc_login() {
+            echo "refreshing OIDC token..."
+            local oidc_token
+            if ! oidc_token=$(curl -fsSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
+              | jq -r '.value'); then
+              echo "::error::Failed to obtain OIDC token from GitHub"
+              return 1
+            fi
+            if [ -z "$oidc_token" ] || [ "$oidc_token" = "null" ]; then
+              echo "::error::Failed to obtain OIDC token from GitHub"
+              return 1
+            fi
+            az login --service-principal \
+              -u "$AZURE_CLIENT_ID" \
+              -t "$AZURE_TENANT_ID" \
+              --federated-token "$oidc_token" \
+              --output none
+            az account set -s "$AZURE_SUBSCRIPTION_ID"
+          }
+
+          az_oidc_login
+
+          # Run a shell script on the VM via the Azure RunCommandLinux
+          # extension.  This extension is a dynamically-linked ELF binary
+          # that requires /lib64/ld-linux-x86-64.so.2. On NixOS, this
+          # interpreter is provided by programs.nix-ld; without it the
+          # extension exits with code 127.
+          #
+          # Common failure modes:
+          #   exit code 127 = nix-ld not active (the exact problem this PR fixes)
+          #   timeout       = RunCommandLinux extension failed to install
+          #
+          # Note: az vm run-command can take 1-2 minutes — this is normal.
+          echo "running az vm run-command invoke on $vm_name (may take 1-2 minutes)..."
+          runcmd_output=$(az vm run-command invoke \
+            -g "$RG" \
+            -n "$vm_name" \
+            --command-id RunShellScript \
+            --scripts 'echo "run-command-ok"; cat /etc/os-release; nixos-version' \
+            -o json)
+
+          # The combined stdout+stderr is in .value[0].message.
+          # Use // "" rather than // empty so a null or missing field
+          # produces an empty string rather than silently suppressing output,
+          # making it easier to diagnose malformed API responses.
+          message=$(echo "$runcmd_output" | jq -r '.value[0].message // ""')
+          if [ -z "$message" ]; then
+            echo "::error::az vm run-command returned no output — response may be malformed: $runcmd_output"
+            echo "run_command_ok=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          echo "--- run-command output ---"
+          echo "$message"
+          echo "--------------------------"
+
+          # Assert the output contains both expected strings.
+          run_command_ok=false
+          if echo "$message" | grep -q 'run-command-ok' && echo "$message" | grep -q 'ID=nixos'; then
+            run_command_ok=true
+            echo ""
+            echo "=========================================="
+            echo "  AZ VM RUN-COMMAND TEST SUCCESSFUL"
+            echo "  Controller: ${DISK_CONTROLLER}"
+            echo "  Output verified: run-command-ok + ID=nixos"
+            echo "=========================================="
+            echo ""
+          else
+            echo "::error::az vm run-command output did not contain expected strings."
+            echo "::error::Expected: 'run-command-ok' and 'ID=nixos'"
+            echo "::error::Got: $message"
+          fi
+
+          echo "run_command_ok=${run_command_ok}" >> "$GITHUB_OUTPUT"
+
+          # Fail the step if assertions did not pass.
+          [ "$run_command_ok" = "true" ] || exit 1
+
       - name: Job summary
         if: always()
         env:
@@ -770,6 +868,7 @@ jobs:
           NV:      ${{ steps.assert.outputs.nixos_version }}
           RG:      ${{ needs.prepare.outputs.rg }}
           DISK_CONTROLLER: ${{ matrix.disk_controller }}
+          RUN_CMD: ${{ steps.runcmd.outputs.run_command_ok }}
         run: |
           {
             echo "### Smoke test summary \u2014 ${DISK_CONTROLLER}"
@@ -784,6 +883,7 @@ jobs:
             ipred=$(echo "${IP:-}" | sed -E 's/\.[0-9]+$/.x/')
             echo "| VM public IP | \`${ipred:-?}\` |"
             echo "| nixos-version | \`${NV:-?}\` |"
+            echo "| az vm run-command | \`${RUN_CMD:-?}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # =====================================================================
